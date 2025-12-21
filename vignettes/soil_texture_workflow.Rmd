@@ -1,0 +1,827 @@
+---
+title: "Soil Texture Workflow"
+author: "Andrew G. Brown"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_vignette:
+    number_sections: true
+vignette: >
+  %\VignetteIndexEntry{Soil Texture Workflow}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 8,
+  fig.height = 6,
+  dpi = 100
+)
+```
+
+# Overview
+
+This vignette demonstrates a workflow for spatially simulating soil texture separates (Sand, Silt, Clay) using the **geocoda** package.
+
+Soil texture is a compositional variable; its components must sum to exactly 100%. This sum constraint violates standard statistical assumptions (e.g., variables are treated as independent), making conventional multivariate geostatistics inappropriate. The Isometric Log-Ratio (ILR) transformation is one principled approach designed specifically for compositional data: it removes the sum constraint, allowing standard multivariate geostatistics to be applied to the transformed space. Back-transformation of simulation results guarantees that all realizations sum to 100% and remain non-negative. This workflow uses ILR transformations; however, other transformations (e.g., Centered Log-Ratio or Additive Log-Ratio) offer different properties and may be more suitable depending on the analytical goal. The framework is generic and applicable to any $D$-part composition (geochemistry, vegetation classes, mineral assemblages, etc.).
+
+The workflow follows five key steps:
+
+1. **Constrain** - Define valid ranges for soil fine-earth fraction components
+2. **Transform** - Convert to ILR space to eliminate the sum constraint
+3. **Model** - Fit a Linear Model of Coregionalization (LMC) using covariance structure and spatial variograms
+4. **Simulate** - Generate spatial realizations in ILR space
+5. **Back-transform** - Return to original units, preserving the 100% constraint
+
+# Data Preparation and Analysis
+
+## Setup and Load Packages
+
+```{r, message=FALSE}
+library(geocoda)
+library(gstat)
+library(sf)
+library(terra)
+
+# Set seed for reproducibility
+set.seed(42)
+```
+
+## Define Composition Constraints
+
+Start by defining realistic bounds for soil texture components. These constraints represent the plausible range of values you expect to simulate.
+
+```{r}
+constraints <- list(
+  SAND = list(min = 0, max = 40),
+  SILT = list(min = 50, max = 80),
+  CLAY = list(min = 10, max = 20)
+)
+```
+
+This example uses typical silt loam bounds: sand and clay restricted to narrow ranges, silt filling the remainder to sum to 100%.
+
+## Generate Valid Composition Grid
+
+Expand the constraints into a grid of all physically valid combinations that sum to exactly 100%. For exploration, coarse grids (0.5-1% resolution) are usually sufficient, though finer grids allow more detailed compositions at higher computational cost.
+
+```{r}
+grid <- gc_expand_bounds(constraints, step = 1.0, target_sum = 100)
+```
+
+With 1% resolution, we get `nrow(grid)` valid compositions. Let's check the first few:
+
+```{r}
+head(grid)
+```
+
+All rows sum to 100% within floating-point tolerance:
+
+```{r}
+all(abs(rowSums(grid) - 100) < 1e-6)
+```
+
+## Bootstrap Samples from Valid Compositions
+
+Sample from the valid composition grid to create a representative sample population. This can use uniform random sampling or soil texture-aware methods (if `aqp` is available). For soil texture-aware sampling that respects texture class boundaries, use `method = "soil_texture"` with the `aqp` package installed.
+
+```{r}
+samples <- gc_resample_compositions(
+  grid,
+  n = 1000,
+  method = "uniform"
+)
+```
+
+Check the sample statistics:
+
+```{r}
+data.frame(
+  Component = c("SAND", "SILT", "CLAY"),
+  Mean = colMeans(samples$samples),
+  StdDev = apply(samples$samples, 2, sd),
+  Min = apply(samples$samples, 2, min),
+  Max = apply(samples$samples, 2, max)
+)
+```
+
+## Estimate ILR Parameters
+
+Transform the sample compositions to ILR space and estimate the mean vector and covariance matrix.
+
+```{r}
+params <- gc_ilr_params(samples$samples)
+params$mean
+```
+
+The covariance matrix:
+
+```{r}
+params$cov
+```
+
+# Geostatistical Modeling
+
+## Suggest and Set Variogram Parameters
+
+The **variogram** quantifies spatial correlation by measuring how similarity between values changes with distance:
+
+$$\gamma(h) = \frac{1}{2} E[Z(x) - Z(x+h)]^2$$
+
+where $Z(x)$ represents the value at location $x$.
+
+Key properties:
+
+- At distance 0: $\gamma(0) = 0$ (perfect similarity with itself)
+- At small distances: $\gamma(h)$ is small, indicating high correlation
+- At large distances: $\gamma(h)$ approaches a maximum value (the sill), indicating independence
+- **Nugget effect**: Often a discontinuity at $h=0$, representing measurement error or small-scale variation
+- **Range**: The distance at which the variogram reaches the sill, beyond which observations are uncorrelated
+
+Use a helper function to suggest reasonable parameters:
+
+```{r}
+extent <- c(0, 0, 100, 100)
+suggestions <- gc_vgm_defaults(params, extent)
+```
+
+```{r}
+suggestions
+```
+
+Create the variogram model using the suggested range, but reduce it substantially to better capture local features. We also use a small nugget to preserve the conditioning effect:
+
+```{r}
+vgm_model <- gstat::vgm(
+  psill = 1,
+  model = "Exp",
+  range = suggestions$range * 0.35,
+  nugget = 0.01
+)
+vgm_model
+```
+
+## Build Multivariate Geostatistical Model
+
+Combine the ILR covariance structure with the spatial variogram to create a joint multivariate representation:
+
+```{r}
+model <- gc_ilr_model(params, variogram_model = vgm_model)
+model
+```
+
+By default, `gc_ilr_model()` uses Independent Univariate Kriging (one model per ILR dimension, no cross-covariance terms). This approach is numerically stable and standard practice. For comparison, you can also build a Linear Model of Coregionalization (LMC) with cross-covariance terms by specifying `model_type = "lmc"`:
+
+```{r}
+## Alternative: Build LMC Model with Cross-Covariance Terms
+model_lmc <- gc_ilr_model(params, variogram_model = vgm_model, model_type = "lmc")
+model_lmc
+```
+
+The LMC approach includes spatial correlation between ILR dimensions. While theoretically more complete, it's more numerically complex and rarely necessary given that the ILR transformation already decorrelates the data significantly. For most applications, the univariate approach is preferred.
+
+# Spatial Simulation
+
+## Define Simulation Grid
+
+Create a regular spatial grid where you want to simulate soil texture:
+
+```{r}
+x_range <- seq(0, 100, by = 4)
+y_range <- seq(0, 100, by = 4)
+grid_df <- expand.grid(x = x_range, y = y_range)
+
+grid_sf <- sf::st_as_sf(grid_df, coords = c("x", "y"))
+```
+
+This creates a 26×26 grid with 4 unit spacing (`nrow(grid_sf)` cells total).
+
+## Generate Spatial Realizations
+
+Simulate multiple equally-probable realizations of soil texture across the domain. For uncertainty quantification, use 10-20 realizations; for exploratory analysis, 1-3 realizations are sufficient.
+
+```{r}
+sims <- gc_sim_composition(
+  model,
+  grid_sf,
+  nsim = 3,
+  target_names = c("sand", "silt", "clay"),
+  crs = "local"
+)
+sims
+```
+
+## Validation
+
+Verify that constraints are satisfied and output statistics are reasonable:
+
+```{r}
+vals <- as.data.frame(terra::values(sims))
+```
+
+Check the sum constraint for each realization:
+
+```{r}
+for (sim_idx in 1:3) {
+  col_indices <- grep(paste0("sim", sim_idx), colnames(vals))
+  sums <- rowSums(vals[, col_indices])
+  cat(
+    "Realization", sim_idx, ": min =", round(min(sums), 4),
+    ", max =", round(max(sums), 4),
+    ", mean =", round(mean(sums), 4), "\n"
+  )
+}
+```
+
+Check non-negativity:
+
+```{r}
+min(as.matrix(vals))
+max(as.matrix(vals))
+```
+
+## Summary Statistics and Visualization
+
+Summary of the first realization:
+
+```{r}
+first_sim <- vals[, grep("sim1", colnames(vals))]
+summary(first_sim)
+```
+
+Correlation structure:
+
+```{r}
+cor(first_sim)
+```
+
+Marginal distributions:
+
+```{r}
+apply(first_sim, 2, function(x) {
+  c(Mean = mean(x), SD = sd(x), Min = min(x), Max = max(x))
+})
+```
+
+## Visualizing Results
+
+```{r, fig.align='center'}
+plot(sims, main = c(
+  "Sand (%)", "Silt (%)", "Clay (%)",
+  "Realization 2", "Realization 2", "Realization 2",
+  "Realization 3", "Realization 3", "Realization 3"
+))
+```
+
+# Advanced Techniques
+
+## Conditional Simulation with Observed Data
+
+In practice, you often have field observations or laboratory measurements of soil texture at specific locations. **Conditional simulation** honors these observed values while generating realizations at unobserved locations, reducing uncertainty near samples.
+
+## Prepare Conditioning Data
+
+Create spatially-structured conditioning data to simulate a realistic field scenario. We'll create observation points with higher sand content along a diagonal line:
+
+```{r}
+set.seed(123)
+
+# Create observation locations along a diagonal line
+n_obs <- 8
+t_vals <- seq(0, 1, length.out = n_obs)
+obs_coords <- data.frame(
+  x = 20 + 60 * t_vals,
+  y = 20 + 60 * t_vals
+)
+
+# Assign sandy loam compositions with measurement variation
+obs_comps <- list()
+for (i in 1:nrow(obs_coords)) {
+  base_comp <- c(SAND = 60, SILT = 25, CLAY = 15)
+  noise <- rnorm(3, mean = 0, sd = 2)
+  obs_comp <- pmax(pmin(base_comp + noise, 100), 0)
+  obs_comp <- obs_comp / sum(obs_comp) * 100
+  obs_comps[[i]] <- obs_comp
+}
+obs_samples <- as.data.frame(do.call(rbind, obs_comps))
+```
+
+Transform observations to ILR space:
+
+```{r}
+obs_ilr <- compositions::ilr(compositions::acomp(obs_samples))
+colnames(obs_ilr) <- c("ilr1", "ilr2")
+
+conditioning_data <- sf::st_as_sf(
+  data.frame(x = obs_coords$x, y = obs_coords$y, obs_ilr),
+  coords = c("x", "y")
+)
+conditioning_data
+```
+
+## Build Model with Conditioning Data
+
+The model switches to kriging mode when conditioning data is provided:
+
+```{r}
+model_conditional <- gc_ilr_model(
+  ilr_params = params,
+  variogram_model = vgm_model,
+  data = conditioning_data
+)
+model_conditional
+```
+
+## Simulate with Conditioning
+
+Perform the conditional simulation. Since the model was built with conditioning data, it automatically honors those values during prediction:
+
+```{r}
+sims_conditional <- gc_sim_composition(
+  model = model_conditional,
+  locations = grid_sf,
+  nsim = 1,
+  target_names = c("sand", "silt", "clay"),
+  crs = "local",
+  observed_data = conditioning_data
+)
+```
+
+For comparison, also generate unconditional simulation with the same grid and parameters:
+
+```{r}
+sims_unconditional <- gc_sim_composition(
+  model = model,
+  locations = grid_sf,
+  nsim = 1,
+  target_names = c("sand", "silt", "clay"),
+  crs = "local"
+)
+```
+
+## Verification
+
+Extract predicted values at the observation locations:
+
+```{r}
+extracted <- terra::extract(sims_conditional, conditioning_data)
+
+comparison <- data.frame(
+  Observed = obs_samples$SAND,
+  Predicted = extracted$sand.sim1,
+  Error = extracted$sand.sim1 - obs_samples$SAND
+)
+
+comparison
+```
+
+Conditional kriging successfully reproduces the observed sand values at sample locations, with errors under ±2%.
+
+Visualize the simulations side-by-side:
+
+```{r, fig.align='center', fig.width=8, fig.height=6}
+par(mfrow = c(1, 2))
+plot(sims_unconditional[["sand.sim1"]], main = "Unconditional: Sand")
+plot(sims_conditional[["sand.sim1"]], main = "Conditional: Sand (Diagonal Observations)")
+cond_coords <- sf::st_coordinates(conditioning_data)
+points(cond_coords[, 1], cond_coords[, 2], pch = 1, cex = 2, col = "black", lwd = 2)
+par(mfrow = c(1, 1))
+```
+
+The hollow circles mark the observation locations. The conditional simulation shows a clear influence from these measurements, with sand content concentrated near the diagonal line where the observations were placed.
+
+## Understanding Conditional Simulation
+
+Conditional simulation differs fundamentally from unconditional simulation in how it uses data. Unconditional simulation ignores observations and samples from the marginal distribution everywhere, producing uniformly high uncertainty. Conditional simulation incorporates observed values at sample locations, reducing uncertainty in the vicinity of measurements. Away from observations, uncertainty gradually increases with distance.
+
+Choose unconditional simulation to explore regional patterns without anchoring to specific measurements. Use conditional simulation whenever you have field observations or measurements that should inform predictions. Conditioning reduces uncertainty near measurement locations and improves reliability for decision-making based on the realizations.
+
+## Handling Zeros and Censored Data
+
+Real-world compositional data often contains zeros (non-detected values, trace components) or below-detection-limit (censored) measurements. Zeros are problematic because the geometric mean is undefined, making standard covariance analysis unstable. The `gc_handle_zeros()` function addresses this using log-ratio-based imputation methods.
+
+## Zero Imputation Strategies
+
+The package provides three imputation approaches, accessible via the `method` parameter:
+
+- **mzero** (multiplicative zero replacement): Fast, replaces zeros with a small multiple of the detection limit
+- **azero** (additive zero replacement): Conservative, adds a small constant to all values
+- **lrem** (log-ratio EM): Probabilistic, uses expectation-maximization on log-ratio space
+
+For soil texture data with a few isolated zeros, `mzero` is typically sufficient. For many zeros (>30% of values), `lrem` is more principled.
+
+Example with zeros in soil texture data:
+
+```{r, eval=FALSE}
+# Create data with some zeros
+soil_with_zeros <- data.frame(
+  SAND = c(40, 35, 0, 42, 38),
+  SILT = c(35, 40, 45, 36, 40),
+  CLAY = c(25, 25, 55, 22, 22)
+)
+
+# Impute using multiplicative zero replacement (default)
+imputation_result <- gc_handle_zeros(soil_with_zeros, method = "mzero")
+
+print(imputation_result$imputed_data)
+print(paste("Imputation rate:", round(imputation_result$imputation_rate, 4)))
+print(paste("Rows imputed:", sum(imputation_result$row_status == "imputed")))
+```
+
+The `imputed_data` component is ready for use in further analysis (transformation, covariance estimation, etc.).
+
+For datasets with censored measurements and known detection limits:
+
+```{r, eval=FALSE}
+# Define detection limits for each component
+detection_limits <- c(SAND = 1, SILT = 1, CLAY = 1)
+
+# Use log-ratio EM for censored data
+result_lrem <- gc_handle_zeros(
+  soil_with_zeros,
+  method = "lrem",
+  dl = detection_limits
+)
+```
+
+## Data Quality Diagnostics
+
+After building a kriging model with conditioning data, assess how well the model honors the observations using `gc_validate_conditioning()`.
+
+```{r, eval=FALSE}
+## Validation compares predictions at observation locations to actual values
+validation <- gc_validate_conditioning(model, conditioning_data)
+
+# Review error metrics
+print(validation$error_metrics)
+print(validation$overall_metrics)
+
+# Check for problematic observations
+high_residuals <- which(abs(validation$residuals$ilr1) > 0.1)
+if (length(high_residuals) > 0) {
+  print("Observations with large residuals:")
+  print(validation$residuals[high_residuals, ])
+}
+```
+
+**Error Metrics Interpretation:**
+- **RMSE**: Root mean squared error; smaller is better (ideally < 0.01 in ILR space)
+- **MAE**: Mean absolute error; typical values 0.5-2% in composition space
+- **Mean_Error**: Signed bias; should be close to zero
+- **Median_Error**: Robustness to outliers
+
+Non-zero residuals can indicate:
+- Numerical precision effects (typically < 1e-10 in ILR space)
+- Model convergence issues (switch to univariate kriging if problematic)
+- Grid resolution effects (predictions on coarse grids may miss exact locations)
+
+For compositional back-transformation, residuals in ILR space can be converted to composition space using `ilrInv()` for interpretation in original units.
+
+## LMC Stability and Admissibility
+
+When using the LMC approach (`model_type = "lmc"`), the positive-definiteness of the covariance structure is critical. The `gc_fit_vgm()` function now includes enhanced diagnostics via the `correct.diagonal` parameter (default 1.01).
+
+The `correct.diagonal` parameter multiplies each marginal sill by a small factor to improve numerical stability:
+
+```{r, eval=FALSE}
+# Use enhanced variogram fitting with LMC diagnostics
+fitted_vgm <- gc_fit_vgm(
+  ilr_params,
+  data = sample_locations_with_ilr,
+  aggregate = TRUE,
+  correct.diagonal = 1.01  # Default: slight diagonal inflation
+)
+
+# Check LMC admissibility
+lmc_admissible <- attr(fitted_vgm, "lmc_admissibility")
+if (!lmc_admissible) {
+  warning("LMC sill matrix may not be positive-definite")
+}
+```
+
+If the model produces singular matrix errors during simulation, increase `correct.diagonal` to 1.02-1.05, or switch to univariate kriging (`model_type = "univariate"`, the default) for better numerical stability.
+
+## Comparing Univariate vs Multivariate Modeling
+
+With conditional simulation now understood, we can compare the two modeling approaches in practice. To see how univariate and LMC models differ, we run conditional simulations with both and compare results.
+
+Create observation data:
+
+```{r}
+set.seed(456)
+
+# Create observation locations along a diagonal
+n_obs <- 10
+t_vals <- seq(0, 1, length.out = n_obs)
+obs_coords <- data.frame(
+  x = 10 + 80 * t_vals,
+  y = 10 + 80 * t_vals
+)
+
+# Assign sandy loam compositions with measurement variation
+obs_comps <- list()
+for (i in 1:nrow(obs_coords)) {
+  base_comp <- c(SAND = 55, SILT = 30, CLAY = 15)
+  noise <- rnorm(3, mean = 0, sd = 2)
+  obs_comp <- pmax(pmin(base_comp + noise, 100), 0)
+  obs_comp <- obs_comp / sum(obs_comp) * 100
+  obs_comps[[i]] <- obs_comp
+}
+obs_samples <- as.data.frame(do.call(rbind, obs_comps))
+
+# Transform to ILR space
+obs_ilr <- compositions::ilr(compositions::acomp(obs_samples))
+colnames(obs_ilr) <- c("ilr1", "ilr2")
+
+comparison_data <- sf::st_as_sf(
+  data.frame(x = obs_coords$x, y = obs_coords$y, obs_ilr),
+  coords = c("x", "y")
+)
+```
+
+Build conditional models with both approaches:
+
+```{r}
+# Univariate model with conditioning data
+model_univ_cond <- gc_ilr_model(
+  params, 
+  variogram_model = vgm_model,
+  data = comparison_data
+)
+
+# LMC model with conditioning data
+model_lmc_cond <- gc_ilr_model(
+  params, 
+  variogram_model = vgm_model,
+  data = comparison_data,
+  model_type = "lmc"
+)
+```
+
+Create a fine grid for simulation:
+
+```{r}
+fine_grid <- expand.grid(
+  x = seq(0, 100, by = 5),
+  y = seq(0, 100, by = 5)
+)
+fine_grid_sf <- sf::st_as_sf(fine_grid, coords = c("x", "y"))
+```
+
+Simulate with both models:
+
+```{r}
+sims_univ_comp <- gc_sim_composition(
+  model_univ_cond, fine_grid_sf, nsim = 1,
+  target_names = c("sand", "silt", "clay")
+)
+
+sims_lmc_comp <- gc_sim_composition(
+  model_lmc_cond, fine_grid_sf, nsim = 1,
+  target_names = c("sand", "silt", "clay")
+)
+```
+
+Visual comparison:
+
+```{r, fig.align='center'}
+par(mfrow = c(1, 2))
+
+plot(sims_univ_comp[["sand.sim1"]], main = "Univariate: Sand", zlim = c(30, 75))
+cond_coords <- sf::st_coordinates(comparison_data)
+points(cond_coords[, 1], cond_coords[, 2], pch = 1, cex = 2, col = "black", lwd = 2)
+
+plot(sims_lmc_comp[["sand.sim1"]], main = "LMC: Sand", zlim = c(30, 75))
+points(cond_coords[, 1], cond_coords[, 2], pch = 1, cex = 2, col = "black", lwd = 2)
+
+par(mfrow = c(1, 1))
+```
+
+Numerical comparison at observation locations:
+
+```{r}
+# Extract predicted values at observation points
+univ_extracted <- terra::extract(sims_univ_comp, comparison_data)
+lmc_extracted <- terra::extract(sims_lmc_comp, comparison_data)
+
+# Compare to observed values
+comparison_table <- data.frame(
+  Observed = obs_samples$SAND,
+  Univariate = univ_extracted$sand.sim1,
+  LMC = lmc_extracted$sand.sim1,
+  Univ_Error = abs(univ_extracted$sand.sim1 - obs_samples$SAND),
+  LMC_Error = abs(lmc_extracted$sand.sim1 - obs_samples$SAND)
+)
+
+comparison_table
+```
+
+Both approaches produce similar results at observation locations. The univariate model achieves a mean absolute error of ~2.8% and maximum error of ~10.9%, while the LMC model shows mean absolute error of ~3.0% and maximum error of ~9.4%. These differences are negligible for practical purposes, confirming that the simpler univariate approach is adequate. The univariate method is preferred for its numerical stability, computational efficiency, and ease of interpretation.
+
+# Quality Assessment and Remediation
+
+## Evaluating Data Quality: Stationarity and Gaussianity
+
+Before proceeding to spatial simulation, assess whether the data meets the assumptions required by geostatistical methods. Two key assessments inform the remediation strategy:
+
+- **Stationarity**: Whether the statistical properties vary across the study area
+- **Gaussianity**: Whether the ILR-transformed data are multivariate normal
+
+Based on the results of these assessments, you can select appropriate remediation techniques.
+
+Prepare sample data with ILR values for diagnostics:
+
+```{r}
+# Create sample data with spatial coordinates
+set.seed(123)
+n_samples <- 100
+sample_locations_with_ilr <- data.frame(
+  x = runif(n_samples, 0, 100),
+  y = runif(n_samples, 0, 100),
+  ilr1 = rnorm(n_samples, mean = 0.5, sd = 0.8),
+  ilr2 = rnorm(n_samples, mean = -0.2, sd = 0.6)
+)
+
+head(sample_locations_with_ilr)
+```
+
+### Assessing Stationarity
+
+Spatial stationarity means the covariance structure is constant across the domain. Non-stationarity suggests the domain contains distinct compositional provinces that should be modeled separately.
+
+The `gc_assess_stationarity()` function uses PCA biplot visualization to detect spatial clustering of data points:
+
+```{r}
+stationarity_result <- gc_assess_stationarity(
+  sample_locations_with_ilr,
+  method = "biplot",
+  plot = TRUE
+)
+```
+
+The biplot colors points by X-coordinate. If points cluster by spatial location (e.g., left side vs right side in the same direction), this indicates non-stationarity and suggests domain stratification.
+
+**Interpretation:**
+
+- **Stationary**: Points scattered randomly in the biplot without spatial clustering. Proceed with global LMC modeling.
+- **Non-stationary**: Points cluster spatially. Either stratify the domain or apply domain-specific models for each stratum.
+
+An alternative quantitative approach divides the domain into windows:
+
+```{r}
+stationarity_local <- gc_assess_stationarity(
+  sample_locations_with_ilr,
+  method = "local",
+  plot = FALSE
+)
+
+stationarity_local$summary
+```
+
+The local method compares covariance structures within windows. Large variation between windows indicates non-stationarity and supports domain stratification.
+
+### Assessing Gaussianity
+
+Sequential Gaussian Simulation assumes the ILR-transformed data are multivariate normal. The `gc_assess_gaussianity()` function tests this assumption:
+
+```{r}
+ilr_values <- sample_locations_with_ilr[, c("ilr1", "ilr2")]
+
+gaussianity_result <- gc_assess_gaussianity(
+  ilr_values,
+  method = "anderson",
+  plot = TRUE,
+  alpha = 0.05
+)
+
+gaussianity_result$recommendation
+```
+
+**Available Methods:**
+
+- **Anderson-Darling** (recommended): Tests each ILR dimension separately. Sensitive to tail departures from normality.
+- **Shapiro-Wilk**: Alternative univariate test, limited to N ≤ 5000 samples.
+- **Mardia**: Multivariate test for joint skewness and kurtosis, provides holistic assessment.
+
+**Interpretation:**
+
+- **Gaussian** (p-value > 0.05): Proceed with Sequential Gaussian Simulation (SGS).
+- **Non-Gaussian** (p-value ≤ 0.05): Consider remediation:
+  - Apply anamorphosis (normal-score back-transform after simulation)
+  - Stratify domain by geological or soil units
+  - Document and accept uncertainty in the simulation
+
+### Applying Anamorphosis Remediation
+
+When data are non-Gaussian, anamorphosis transforms simulated values from normal space back to the original data distribution while preserving spatial correlation. This works by matching quantiles of the simulated data to quantiles of the reference data.
+
+```{r}
+ilr_values <- sample_locations_with_ilr[, c("ilr1", "ilr2")]
+
+sim_ilr <- matrix(rnorm(100, 0, 1), nrow = 50, ncol = 2)
+colnames(sim_ilr) <- c("ilr1", "ilr2")
+
+back_transformed <- gc_apply_anamorphosis(
+  sim_ilr,
+  ref_ilr_values = ilr_values,
+  despike = TRUE
+)
+
+ref_range <- apply(ilr_values, 2, range)
+all(back_transformed >= ref_range[1, ] & back_transformed <= ref_range[2, ])
+```
+
+The anamorphosis process:
+
+1. Computes quantiles of the reference (original) ILR values
+2. Computes quantiles of the simulated values
+3. Maps simulated quantiles to reference quantiles (inverse transform)
+4. Interpolates for values between quantiles
+5. Optionally despiking to cap extreme extrapolations
+
+This preserves the marginal distribution of the original data while maintaining spatial correlation structure from the simulation.
+
+### Identifying Domain Strata
+
+When non-stationarity is detected, the domain may contain distinct compositional provinces or geological units that should be modeled separately. The `gc_identify_strata()` function partitions observations into spatially-coherent strata using clustering methods.
+
+```{r}
+# Identify strata using K-means clustering in PCA space
+strata_result <- gc_identify_strata(
+  sample_locations_with_ilr,
+  n_strata = 2,
+  method = "kmeans",
+  plot = TRUE
+)
+
+# Examine the stratification results
+strata_result$n_strata
+table(strata_result$strata)
+```
+
+The stratification identifies:
+
+1. **Strata in PCA space**: Shows how clusters separate observations based on compositional variance. PCA reduces dimensionality while retaining the structure that distinguishes domains.
+
+2. **Strata in spatial layout**: Reveals whether clusters are geographically coherent. Tight, localized clusters indicate true domain partitioning, while scattered patterns may suggest mixed lithologies or contamination.
+
+3. **Quality metrics**: Silhouette widths measure how well each observation fits its assigned stratum (ranges from -1 to 1, where >0.5 indicates good separation). Average silhouette widths by stratum guide model selection.
+
+Once strata are identified, you can model each stratum independently:
+
+```{r}
+# Model first stratum
+stratum_1_data <- sample_locations_with_ilr[strata_result$strata == 1, ]
+stratum_2_data <- sample_locations_with_ilr[strata_result$strata == 2, ]
+
+# Each stratum can now be assessed for stationarity and Gaussianity
+stat_1 <- gc_assess_stationarity(stratum_1_data, method = "biplot", plot = FALSE)
+stat_2 <- gc_assess_stationarity(stratum_2_data, method = "biplot", plot = FALSE)
+
+# Proceed with workflow on each stratum independently
+```
+
+### Integrated Diagnostic Workflow
+
+A complete assessment combines stationarity and Gaussianity tests to determine the appropriate remediation strategy. Run both diagnostics on your data:
+
+```{r}
+stat_result <- gc_assess_stationarity(
+  sample_locations_with_ilr,
+  method = "biplot",
+  plot = FALSE
+)
+
+ilr_vals <- sample_locations_with_ilr[, c("ilr1", "ilr2")]
+gauss_result <- gc_assess_gaussianity(
+  ilr_vals,
+  method = "anderson",
+  plot = FALSE
+)
+
+assessment <- data.frame(
+  Aspect = c("Stationarity", "Gaussianity"),
+  Status = c(
+    if (stat_result$stationary) "Yes" else "No",
+    if (gauss_result$gaussian) "Yes" else "No"
+  )
+)
+assessment
+```
+
+The results determine your remediation path:
+
+- **Stationary + Gaussian**: Proceed with standard workflow (LMC modeling with Sequential Gaussian Simulation)
+- **Non-stationary + Gaussian**: Stratify domain using `gc_identify_strata()`, apply workflow to each stratum
+- **Stationary + Non-Gaussian**: Apply anamorphosis to simulated results with `gc_apply_anamorphosis()`
+- **Non-stationary + Non-Gaussian**: Stratify domain AND apply anamorphosis to each stratum's simulated results
+
+The `gc_identify_strata()` function can automatically partition the domain based on PCA clustering if non-stationarity is detected, suggesting where to split the data for independent modeling.
+
+# References
+
+- Aitchison, J. (1986). The Statistical Analysis of Compositional Data.
+- Egozcue et al. (2003). Isometric logratio transformations for compositional data analysis.
+- Chilès, J.P. & Delfiner, P. (2012). Geostatistics: Modeling Spatial Uncertainty.

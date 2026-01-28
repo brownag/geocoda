@@ -1,0 +1,20 @@
+<urlset xmlns = 'http://www.sitemaps.org/schemas/sitemap/0.9'>
+<url><loc>/404.html</loc></url>
+<url><loc>/LICENSE-text.html</loc></url>
+<url><loc>/LICENSE.html</loc></url>
+<url><loc>/articles/index.html</loc></url>
+<url><loc>/articles/soil_texture_workflow.html</loc></url>
+<url><loc>/authors.html</loc></url>
+<url><loc>/index.html</loc></url>
+<url><loc>/reference/gc_expand_bounds.html</loc></url>
+<url><loc>/reference/gc_fit_vgm.html</loc></url>
+<url><loc>/reference/gc_handle_zeros.html</loc></url>
+<url><loc>/reference/gc_ilr_model.html</loc></url>
+<url><loc>/reference/gc_ilr_params.html</loc></url>
+<url><loc>/reference/gc_resample_compositions.html</loc></url>
+<url><loc>/reference/gc_sim_composition.html</loc></url>
+<url><loc>/reference/gc_validate_conditioning.html</loc></url>
+<url><loc>/reference/gc_vgm_defaults.html</loc></url>
+<url><loc>/reference/index.html</loc></url>
+</urlset>
+

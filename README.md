@@ -1,0 +1,221 @@
+# geocoda
+
+## Overview
+
+`geocoda` is an R package for geostatistical simulation of compositional data. It implements a complete workflow for generating spatial realizations of constrained multivariate compositions using Isometric Log-Ratio (ILR) transformations and geostatistical kriging (Independent Univariate or Linear Model of Coregionalization).
+
+While designed to handle any compositional data (geochemistry, vegetation proportions, etc.), the primary application is spatial simulation of **soil texture separates** (sand, silt, clay) - proportions that sum to a constant (typically 100%).
+
+## Workflow
+
+The package follows a five-step process:
+
+1. **Constrain** - Define validity bounds for each component (low, representative, high)
+2. **Transform** - Convert compositions to Isometric Log-Ratio (ILR) space to break the sum constraint
+3. **Model** - Fit a multivariate geostatistical model to ILR variables (univariate or LMC)
+4. **Simulate** - Generate spatial realizations in ILR space
+5. **Back-transform** - Return to original units, guaranteeing the sum constraint
+
+## Installation
+
+```r
+# Install from GitHub 
+remotes::install_github("brownag/geocoda")
+```
+
+## Quick Start
+
+```r
+library(geocoda)
+
+# Define composition bounds (Sand, Silt, Clay percentages)
+constraints <- list(
+  SAND = list(min = 0, max = 40),
+  SILT = list(min = 50, max = 80),
+  CLAY = list(min = 10, max = 20)
+)
+
+# Expand into a valid composition grid
+grid <- expand_compositional_bounds(constraints, step = 0.5, target_sum = 100)
+
+# Bootstrap samples from valid compositions
+set.seed(123)
+samples <- bootstrap_compositional_samples(grid, n = 1000, method = "uniform")
+
+# Estimate ILR parameters from samples
+params <- estimate_ilr_params(samples)
+
+# Build a variogram model (user-specified)
+library(gstat)
+vgm_template <- vgm(psill = 1, model = "Exp", range = 30, nugget = 0.01)
+
+# Construct the multivariate gstat model
+model <- build_compositional_model(params, variogram_model = vgm_template)
+
+# Create a spatial grid
+x.range <- seq(0, 100, by = 5)
+y.range <- seq(0, 100, by = 5)
+grid_sf <- sf::st_as_sf(
+  expand.grid(x = x.range, y = y.range),
+  coords = c("x", "y"),
+  crs = "local"
+)
+
+# Simulate 10 realizations
+sims <- sim_compositional_field(model, grid_sf, nsim = 10)
+
+# Result is a SpatRaster with layers:
+# sand.sim1, silt.sim1, clay.sim1, sand.sim2, silt.sim2, clay.sim2, ...
+print(sims)
+```
+
+## Key Functions
+
+- **`expand_compositional_bounds()`** - Generate a grid of valid compositions from constraints
+- **`bootstrap_compositional_samples()`** - Draw samples from valid compositions (uniform or soil texture)
+- **`estimate_ilr_params()`** - Calculate ILR mean and covariance
+- **`gc_ilr_model()`** - Construct multivariate gstat model with Independent Univariate kriging (default) or LMC; supports conditional simulation
+- **`gc_vgm_defaults()`** - Suggest reasonable variogram parameters based on data
+- **`gc_fit_vgm()`** - Fit empirical variograms per ILR dimension with optional aggregation
+- **`gc_sim_composition()`** - Simulate and back-transform to original units; supports conditioning on observed data
+
+## Advanced Features
+
+### 2. Model Types: Univariate vs LMC
+
+The `gc_ilr_model()` function supports two modeling approaches via the `model_type` parameter:
+
+**Independent Univariate Kriging** (`model_type = "univariate"`, default):
+- Models each ILR dimension separately without cross-covariance terms
+- Numerically stable and robust (avoids positive-definite issues)
+- Standard practice in compositional geostatistics
+- Efficient for large problems
+- Recommended for most applications
+
+**Linear Model of Coregionalization** (`model_type = "lmc"`):
+- Includes cross-covariance terms between all pairs of ILR dimensions
+- Theoretically more complete
+- More numerically complex
+- Useful when cross-correlation structure is important
+
+```r
+# Univariate (default, recommended)
+model_univ <- gc_ilr_model(params, variogram_model = vgm_template)
+
+# LMC (alternative with cross-covariance terms)
+model_lmc <- gc_ilr_model(params, variogram_model = vgm_template, model_type = "lmc")
+
+# Both produce equivalent results for most practical applications,
+# but univariate is faster and more numerically stable
+```
+
+### 3. Conditional Simulation
+
+The `gc_ilr_model()` and `gc_sim_composition()` functions support **conditioning on observed data**:
+
+```r
+# Create conditioning data in ILR space
+obs_ilr <- compositions::ilr(compositions::acomp(observed_samples))
+colnames(obs_ilr) <- c("ilr1", "ilr2", "ilr3")
+conditioning_data <- sf::st_as_sf(
+  cbind(obs_locations, as.data.frame(obs_ilr)),
+  coords = c("x", "y"),
+  crs = "local"
+)
+
+# Build model with conditioning data
+model_cond <- gc_ilr_model(
+  params, 
+  variogram_model = vgm_template,
+  data = conditioning_data  # Pass observed data for kriging
+)
+
+# Simulate with conditioning
+sims_cond <- gc_sim_composition(
+  model_cond, 
+  grid_sf, 
+  nsim = 10,
+  observed_data = conditioning_data
+)
+```
+
+**Key properties:**
+- **Unconditional (default)**: Independent realizations from spatial distribution
+- **Conditional**: Realizations honor observed values exactly at sample locations
+- **Uncertainty reduction**: Away from sample locations, uncertainty decreases with distance
+- Maintains sum constraint in all cases
+
+### 4. Empirical Variogram Fitting
+
+The `gc_fit_vgm()` function automatically fits empirical variograms to each ILR dimension:
+
+```r
+# Fit variograms to ILR values at observed locations
+data_with_ilr <- data.frame(
+  x = sample_locations$x,
+  y = sample_locations$y,
+  ilr1 = ilr_values[, 1],
+  ilr2 = ilr_values[, 2],
+  ilr3 = ilr_values[, 3]
+)
+
+# Per-dimension results
+fitted_per_dim <- gc_fit_vgm(
+  params, 
+  data = data_with_ilr,
+  aggregate = FALSE
+)
+
+# Or get aggregated template for model building
+fitted_template <- gc_fit_vgm(
+  params,
+  data = data_with_ilr,
+  aggregate = TRUE
+)
+
+model <- gc_ilr_model(params, variogram_model = fitted_template)
+```
+
+**Key advantages:**
+- Captures spatial structure unique to each component
+- Covariance-weighted aggregation ensures high-variance dimensions contribute appropriately
+- Returns per-dimension fitted models for detailed inspection
+
+### 3. Vignette & Soil Texture Workflow
+
+A comprehensive workflow vignette demonstrates a complete soil texture simulation:
+
+```r
+vignette("soil_texture_workflow", package = "geocoda")
+```
+
+The vignette covers:
+- Soil texture constraints (USDA triangle)
+- Bootstrap sampling of realistic compositions
+- ILR parameter estimation
+- Variogram fitting and optimization
+- Grid creation and simulation
+- Validation (sum constraints, range checks)
+- Visualization of results
+- Tips and troubleshooting
+
+## Dependencies
+
+**Imports:**
+- `compositions` - ILR transformations
+- `gstat` - Geostatistical modeling and simulation
+- `terra` - Raster data handling
+- `sf` - Spatial feature support
+
+**Suggests:**
+- `aqp` - Soil texture bootstrapping utilities
+- `testthat` - Unit testing
+- `knitr` - Documentation
+
+## License
+
+MIT
+
+## Author
+
+Andrew G. Brown

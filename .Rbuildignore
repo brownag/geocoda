@@ -6,3 +6,6 @@
 ^\.github$
 ^vignettes$
 ^LICENSE\.md$
+^_pkgdown\.yml$
+^docs$
+^pkgdown$

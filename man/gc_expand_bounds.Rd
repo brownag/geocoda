@@ -49,3 +49,7 @@ nrow(grid)
 head(grid)
 
 }
+\references{
+Aitchison, J. (1986). The Statistical Analysis of Compositional Data.
+Chapman and Hall, London.
+}

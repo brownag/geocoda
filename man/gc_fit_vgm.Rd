@@ -125,3 +125,11 @@ fitted_agg <- gc_fit_vgm(
 }
 
 }
+\references{
+Deutsch, C. V., & Journel, A. G. (1992). GSLIB: Geostatistical Software Library and User's Guide.
+Oxford University Press, New York.
+
+Lark, R. M. (2009). Analysis of Differences in Kriged Loamy Clay Content Between Two Soil
+Survey Datasets at Two Scales. \emph{Soil Science Society of America Journal}, 73(5), 1662-1672.
+https://doi.org/10.2136/sssaj2008.0387
+}

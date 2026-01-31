@@ -23,6 +23,10 @@
 #' These are heuristics and should be refined using empirical variography
 #' (see [gc_fit_vgm()]).
 #'
+#' @references
+#' Goovaerts, P. (1997). Geostatistics for Natural Resources Evaluation.
+#' Oxford University Press, Oxford.
+#'
 #' @importFrom stats as.formula
 #' @examples
 #' samples <- data.frame(
@@ -161,6 +165,14 @@ gc_vgm_defaults <- function(ilr_params, extent) {
 #' )
 #' }
 #'
+#' @references
+#' Deutsch, C. V., & Journel, A. G. (1992). GSLIB: Geostatistical Software Library and User's Guide.
+#' Oxford University Press, New York.
+#'
+#' Lark, R. M. (2009). Analysis of Differences in Kriged Loamy Clay Content Between Two Soil
+#' Survey Datasets at Two Scales. *Soil Science Society of America Journal*, 73(5), 1662-1672.
+#' https://doi.org/10.2136/sssaj2008.0387
+#'
 #' @importFrom gstat variogram fit.variogram vgm
 #' @export
 gc_fit_vgm <- function(ilr_params,
@@ -253,8 +265,6 @@ gc_fit_vgm <- function(ilr_params,
   fitted_params$psill_corrected <- fitted_params$psill * correct.diagonal
 
   if (aggregate) {
-    weights <- cov_diag / sum(cov_diag)
-
     valid_range <- fitted_params$range[is.finite(fitted_params$range) & fitted_params$range > 0]
     valid_nugget <- fitted_params$nugget[is.finite(fitted_params$nugget) & fitted_params$nugget >= 0]
     valid_psill <- fitted_params$psill_corrected[is.finite(fitted_params$psill_corrected) & fitted_params$psill_corrected > 0]

@@ -1,0 +1,520 @@
+---
+title: "Parameter Selection Guide"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Parameter Selection}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+## Range Parameter
+
+Range defines spatial correlation decay distance.
+
+**Default:** Domain diagonal / 3
+
+**Scaling guidance:**
+- 0.5x: Fine-scale local variation
+- 1.0x: Standard (recommended)
+- 1.5x: Large-scale smooth trends
+- 2.0x: Very smooth fields
+
+**Example:**
+```{r range_calc}
+x_range <- 200
+y_range <- 50
+diag <- sqrt(x_range^2 + y_range^2)
+suggested_range <- diag / 3
+suggested_range
+```
+
+Non-rectangular domains: Adjust based on correlation orientation (use smaller dimension if pattern is local).
+
+---
+
+## Nugget Parameter
+
+Nugget represents measurement error + local variability.
+
+- Typical: 10-30% of sill
+- Small: Smooth surfaces
+- Large: Rough surfaces with noise
+
+---
+
+## Psill Parameter
+
+Partial sill is spatial variance (rarely needs adjustment).
+
+---
+
+## Quick Workflow
+
+```{r workflow, eval=FALSE}
+library(geocoda)
+
+# Get defaults
+extent <- c(0, 0, 100, 100)
+ilr_params <- gc_ilr_params(data)
+defaults <- gc_vgm_defaults(ilr_params, extent)
+
+# Option A: Use defaults
+vgm <- gstat::vgm(
+  psill = defaults$mean_sill,
+  model = "Exp",
+  range = defaults$range,
+  nugget = defaults$nugget
+)
+
+# Option B: Scale for your domain
+vgm_tight <- gstat::vgm(
+  psill = defaults$mean_sill,
+  model = "Exp",
+  range = 0.5 * defaults$range,
+  nugget = defaults$nugget
+)
+
+# Option C: Fit empirical variogram
+fitted <- gc_fit_vgm(ilr_params, data = obs_data)
+```
+
+---
+
+## Reference Table
+
+| Parameter | Range | Adjustment |
+|-----------|-------|-----------|
+| Range | Domain/3 to Domain/2 | Scale 0.5x to 2.0x |
+| Nugget | 10-30% of sill | Adjust for noise |
+| Psill | Data variance | Keep as-is |
+| Model | Exponential | Recommended |
+
+---
+
+## See Also
+
+- `?gc_vgm_defaults()` -- Heuristic parameters
+- `?gc_fit_vgm()` -- Empirical fitting
+
+The **nugget** represents microscale variability and measurement error. It is the variogram value at distance 0.
+
+## Typical Nugget-to-Sill Ratios
+
+| Ratio | Characteristic | Recommendation |
+|-------|-----------------|-----------------|
+| **~0.00-0.10** | Little microscale variance | Pure spatial structure |
+| **~0.10-0.25** | Moderate microscale variance | Most typical datasets |
+| **~0.25-0.50** | Significant local noise | Noisy measurements |
+| **>0.50** | Variance dominated by noise | May indicate poor sampling |
+
+## Calculation
+
+The default suggested nugget is 1% of the mean sill:
+
+```r
+suggested_nugget <- 0.01 * mean_sill
+```
+
+If you have repeated measurements at same locations, estimate nugget directly:
+
+```r
+# With replicates at same locations
+within_replicate_var <- sum((rep1 - rep2)^2) / (2 * n_unique_locations)
+suggested_nugget <- within_replicate_var / 2  # Half the within-replicate variance
+```
+
+## Checking Nugget Quality
+
+After fitting empirical variograms, validate nugget estimates:
+
+```r
+fitted <- gc_fit_vgm(ilr_params, data = obs_data, aggregate = FALSE)
+fitted_params <- fitted$fitted_params
+
+# Calculate nugget-to-sill ratios
+fitted_params$nugget_ratio <- fitted_params$nugget / fitted_params$psill
+print(fitted_params[, c("ilr_id", "nugget", "psill", "nugget_ratio")])
+```
+
+**Red flags**:
+- Nugget ratio > 0.6: May indicate under-sampling or non-stationarity
+- Nugget = 0: Often happens with fitted models; acceptable if data are smooth
+- Negative nugget: Failed fitting; use `correct.diagonal >= 1.01` or re-fit
+
+---
+
+# Sill Parameter Selection
+
+The **sill** is the variogram plateau--the variance at large distances (spatial infinity).
+
+## Relationship to ILR Covariance
+
+The marginal sill (diagonal) should approximate the ILR covariance diagonal:
+
+$$\text{sill}_i \approx \text{Cov}_{ilr}[i,i]$$
+
+where $i$ is the ILR dimension.
+
+`gc_vgm_defaults()` uses the mean of diagonal covariance terms:
+
+```r
+mean_sill <- mean(diag(ilr_params$cov))
+```
+
+This is a reasonable starting point but not authoritative. Empirical fitting with `gc_fit_vgm()` may reveal per-dimension sills that differ:
+
+```r
+fitted <- gc_fit_vgm(ilr_params, data = obs_data, aggregate = FALSE)
+print(fitted$fitted_params[, c("ilr_id", "psill")])
+
+# Compare with covariance diagonal
+print(diag(ilr_params$cov))
+```
+
+Differences indicate spatial structure that is not evenly represented across ILR dimensions.
+
+## Aggregated vs Per-Dimension Sills
+
+**Per-dimension (aggregate = FALSE)**:
+$$\text{sill}_i = \text{Fitted sill for ILR dimension } i$$
+
+Results in a vector of sills--one per dimension. Use if dimensions have distinct spatial autocorrelation.
+
+**Aggregated (aggregate = TRUE)**:
+$$\text{sill}_{\text{agg}} = \frac{\sum_i \text{cov}[i,i] \cdot \text{sill}_i}{\sum_i \text{cov}[i,i]}$$
+
+Covariance-weighted average across dimensions. Use if you want a single template variogram (simplicity, stability).
+
+**Recommendation**: Start with aggregated for stability; switch to per-dimension if diagnostics suggest heterogeneous spatial structure.
+
+---
+
+# Variogram Model Type Selection
+
+## Exponential (`"Exp"`)
+
+**Equation**: 
+$$\gamma(h) = c_0 + c \left[1 - \exp\left(-\frac{h}{a}\right)\right]$$
+
+**Properties**:
+- Smooth behavior at origin (no singularity)
+- Gradual approach to sill
+- Most forgiving model for noisy data
+- **Default choice** in `gc_vgm_defaults()`
+
+**When to use**:
+- General purpose; works in most situations
+- Smooth data with gradual correlation decay
+- First attempts at model fitting
+
+## Spherical (`"Sph"`)
+
+**Equation**:
+$$\gamma(h) = c_0 + c \left[\frac{3h}{2a} - \frac{h^3}{2a^3}\right] \text{ for } h \leq a$$
+
+**Properties**:
+- Linear behavior near origin
+- Reaches sill at finite distance (range = $a$)
+- Slightly more structured than exponential
+
+**When to use**:
+- Well-defined spatial structure with clear range
+- Observations show distinct short-range vs long-range behavior
+- Domain knowledge suggests finite correlation distance
+
+## Gaussian (`"Gau"`)
+
+**Equation**:
+$$\gamma(h) = c_0 + c \left[1 - \exp\left(-\frac{h^2}{a^2}\right)\right]$$
+
+**Properties**:
+- Parabolic behavior at origin (very smooth)
+- Very smooth spatial field
+- Extreme smoothing; use cautiously
+
+**When to use**:
+- Very smooth, well-behaved data
+- Only after confirming non-Gaussian data with anamorphosis
+- Rare in typical applications
+
+## Model Comparison
+
+| Model | Origin Behavior | Sill Reach | Smoothness | Robustness |
+|-------|-----------------|-----------|-----------|-----------|
+| **Exp** | Smooth | Asymptotic | Moderate | High |
+| **Sph** | Linear | Finite | Moderate | High |
+| **Gau** | Parabolic | Asymptotic | Very high | Moderate |
+
+**Default recommendation**: Use `"Exp"` unless you have strong reasons otherwise.
+
+---
+
+# Model Type: Univariate vs. LMC
+
+## Univariate Kriging (Default)
+
+Each ILR dimension is modeled independently:
+
+```r
+model <- gc_ilr_model(ilr_params, vgm_model, model_type = "univariate")
+```
+
+**Advantages**:
+- Numerically stable; always positive-definite
+- Computationally efficient
+- Easy to interpret and troubleshoot
+- Standard practice in compositional geostatistics
+
+**Disadvantages**:
+- Ignores cross-correlation between ILR dimensions
+- May underestimate uncertainty if correlation is strong
+
+**When to use**: Almost always; this is the recommended default.
+
+## Linear Model of Coregionalization (LMC)
+
+All ILR dimensions modeled jointly with cross-covariance terms:
+
+```r
+model <- gc_ilr_model(ilr_params, vgm_model, model_type = "lmc")
+```
+
+**Advantages**:
+- Captures spatial cross-correlation structure
+- More theoretically complete
+- May improve predictions if cross-correlation is strong
+
+**Disadvantages**:
+- Numerically challenging; sill matrix must be positive-definite
+- Sensitive to parameter specification
+- Slower to fit and compute
+- Requires careful tuning of `correct.diagonal`
+
+**When to use**:
+- Only if univariate results show poor cross-validation
+- Only if ILR dimensions have strong spatial correlation
+- Only after confirming with small test cases
+
+## Diagnosing Better Fit
+
+Compare models on held-out data:
+
+```r
+# Leave-one-out cross-validation comparison
+cv_univariate <- gstat::krige.cv(
+  ilr1 ~ 1, 
+  locations = obs_data, 
+  model = model_univariate
+)
+cv_lmc <- gstat::krige.cv(
+  ilr1 ~ 1, 
+  locations = obs_data, 
+  model = model_lmc
+)
+
+mean((cv_univariate$residual)^2)  # Univariate RMSE
+mean((cv_lmc$residual)^2)          # LMC RMSE
+```
+
+Improvement > 5% may justify LMC complexity; < 2% suggests univariate suffices.
+
+---
+
+# Troubleshooting Common Issues
+
+## Issue 1: LMC Model Not Converging or Admissibility Warning
+
+**Symptom**: Error message about positive-definite sill matrix when using `model_type = "lmc"`.
+
+**Cause**: Cross-covariance structure is not positive-definite.
+
+**Solution**:
+```r
+# Use univariate model (recommended)
+model <- gc_ilr_model(ilr_params, vgm_model, model_type = "univariate")
+
+# OR increase sill correction if you must use LMC
+fitted <- gc_fit_vgm(
+  ilr_params,
+  data = obs_data,
+  correct.diagonal = 1.05  # Increase from default 1.01
+)
+```
+
+## Issue 2: Simulations Have Values Outside Valid Range
+
+**Symptom**: Simulated sand > 40% or silt < 40%, outside defined constraints.
+
+**Cause**: Simulation is unconditional; realizations sample from the ILR distribution, not hard-constrained.
+
+**Solution**: This is expected behavior. Use post-processing to clip to constraints (with caveat that sum constraint may be violated):
+
+```r
+# Clip and re-normalize
+clipped <- pmax(pmin(sims_result, upper_bound), lower_bound)
+clipped <- clipped / rowSums(clipped) * 100
+```
+
+**Better solution**: Use conditioning data to pull realizations closer to expected range:
+
+```r
+# Create synthetic conditioning data within constraints
+synthetic_obs <- gc_resample_compositions(grid, n = 20, method = "uniform")
+# Transform to ILR and add as conditioning data
+```
+
+## Issue 3: Simulations Look Spatially Uncorrelated (Too Noisy)
+
+**Symptom**: Simulated field lacks spatial smoothness; looks like random noise.
+
+**Cause**: Range parameter too small or nugget too large.
+
+**Solution**:
+```r
+# Increase range
+vgm_model <- gstat::vgm(
+  psill = mean_sill,
+  model = "Exp",
+  range = 2 * suggested_range,  # Increase spatial correlation distance
+  nugget = suggested_nugget
+)
+
+# OR decrease nugget
+vgm_model <- gstat::vgm(
+  psill = mean_sill,
+  model = "Exp",
+  range = suggested_range,
+  nugget = 0.001 * mean_sill  # Reduce microscale variance
+)
+```
+
+## Issue 4: Variogram Fitting Fails ("Singular Matrix" or NaN)
+
+**Symptom**: `gc_fit_vgm()` returns NaN values or fails with singular matrix error.
+
+**Cause**: Insufficient data, extreme outliers, or collinear spatial structure.
+
+**Solution**:
+```r
+# Check sample size
+if (nrow(obs_data) < 15) warning("Few observations; consider collecting more")
+
+# Check for outliers in ILR space
+boxplot(obs_data[, c("ilr1", "ilr2", "ilr3")])
+# Remove extreme values if needed
+
+# Increase lag width to reduce variogram noise
+fitted <- gc_fit_vgm(
+  ilr_params,
+  data = obs_data,
+  width = 10  # Wider lag bins
+)
+```
+
+## Issue 5: Conditional Simulation Not Reproducing Observed Values
+
+**Symptom**: Kriged values at conditioning locations differ significantly from observations.
+
+**Cause**: Incorrect coordinate reference, measurement error not accounted for, or non-stationary trend.
+
+**Solution**:
+```r
+# Verify coordinates match exactly
+print(head(cbind(obs_data@coords, observed_ilr_values)))
+
+# Check measurement error with replicates
+# If replicates exist, nugget should account for measurement error:
+nugget_est <- within_replicate_error / 2
+
+# If result is non-stationary, stratify:
+strata <- gc_identify_strata(obs_data, k = 2)
+# Model each stratum separately
+```
+
+## Issue 6: ILR Parameter Estimation Fails or Returns NaN
+
+**Symptom**: `gc_ilr_params()` returns NaN in mean or covariance.
+
+**Cause**: Duplicate values, constant component, or all-identical rows.
+
+**Solution**:
+```r
+# Check for constant columns
+apply(samples, 2, sd)  # All should be > 0
+
+# Check for duplicate rows
+if (any(duplicated(samples))) {
+  samples_unique <- samples[!duplicated(samples), ]
+  params <- gc_ilr_params(samples_unique)
+}
+
+# Check for zero or near-zero components
+if (any(rowSums(samples < 0.01) > 0)) {
+  # Use gc_handle_zeros() for imputation
+  result <- gc_handle_zeros(samples, method = "lrem")
+  samples_imputed <- result$imputed_data
+  params <- gc_ilr_params(samples_imputed)
+}
+```
+
+---
+
+# Parameter Tuning Workflow
+
+A recommended sequence for parameter selection:
+
+1. **Start with defaults**:
+   ```r
+   suggested <- gc_vgm_defaults(ilr_params, extent)
+   vgm_base <- gstat::vgm(
+     psill = suggested$mean_sill,
+     model = "Exp",
+     range = suggested$range,
+     nugget = suggested$nugget
+   )
+   ```
+
+2. **Fit empirical variograms**:
+   ```r
+   fitted_vgms <- gc_fit_vgm(ilr_params, obs_data, aggregate = TRUE)
+   ```
+
+3. **Compare and adjust**:
+   ```r
+   # If fitted parameters differ substantially from suggested:
+   # - Adjust range based on fitted values
+   # - Verify model type is appropriate
+   ```
+
+4. **Validate on held-out data**:
+   ```r
+   # Cross-validation
+   ```
+
+5. **Simulate, check sums, and iterate**:
+   ```r
+   # If sums are violated or unrealistic, adjust parameters
+   ```
+
+---
+
+# Recommended Parameter Values by Data Density
+
+| Observations/km² | Range Scaling | Nugget Ratio | Variogram Fit |
+|-----------------|---------------|--------------|----------------|
+| < 0.1 | 1.5–2.0× suggested | 0.10–0.20 | Aggregate only |
+| 0.1–1.0 | 1.0–1.5× suggested | 0.05–0.15 | Aggregate, validate per-dim |
+| 1.0–5.0 | 0.75–1.0× suggested | 0.01–0.10 | Per-dimension recommended |
+| > 5.0 | 0.5–0.75× suggested | 0.005–0.05 | Per-dimension, consider LMC |
+
+---
+
+# References
+
+- Goovaerts, P. (1997). Geostatistics for Natural Resources Evaluation. Oxford University Press.
+- Deutsch, C. V., & Journel, A. G. (1992). GSLIB: Geostatistical Software Library and User's Guide. Oxford University Press.
+- Wackernagel, H. (2003). Multivariate Geostatistics (3rd ed.). Springer-Verlag.

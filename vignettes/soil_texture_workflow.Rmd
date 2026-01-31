@@ -298,7 +298,7 @@ obs_coords <- data.frame(
 
 # Assign sandy loam compositions with measurement variation
 obs_comps <- list()
-for (i in 1:nrow(obs_coords)) {
+for (i in seq_len(nrow(obs_coords))) {
   base_comp <- c(SAND = 60, SILT = 25, CLAY = 15)
   noise <- rnorm(3, mean = 0, sd = 2)
   obs_comp <- pmax(pmin(base_comp + noise, 100), 0)
@@ -522,7 +522,7 @@ obs_coords <- data.frame(
 
 # Assign sandy loam compositions with measurement variation
 obs_comps <- list()
-for (i in 1:nrow(obs_coords)) {
+for (i in seq_len(nrow(obs_coords))) {
   base_comp <- c(SAND = 55, SILT = 30, CLAY = 15)
   noise <- rnorm(3, mean = 0, sd = 2)
   obs_comp <- pmax(pmin(base_comp + noise, 100), 0)
@@ -820,8 +820,267 @@ The results determine your remediation path:
 
 The `gc_identify_strata()` function can automatically partition the domain based on PCA clustering if non-stationarity is detected, suggesting where to split the data for independent modeling.
 
+# Advanced: Data Source Integration
+
+## Handling Depth Stratification
+
+Soil properties often vary with depth. Multi-horizon analysis allows different compositions and spatial models for different depth intervals:
+
+```{r, eval = FALSE}
+# Separate constraints for surface and subsurface horizons
+surface_data <- comp_data[comp_data$depth_cm < 30, ]
+subsurface_data <- comp_data[comp_data$depth_cm >= 30 & comp_data$depth_cm < 60, ]
+
+surface_model <- gc_ilr_model(
+  ilr_params = gc_ilr_params(surface_data[, c("sand", "silt", "clay")]),
+  data = surface_data
+)
+
+subsurface_model <- gc_ilr_model(
+  ilr_params = gc_ilr_params(subsurface_data[, c("sand", "silt", "clay")]),
+  data = subsurface_data
+)
+
+# Simulate each horizon independently, then combine results
+```
+
+Typical pattern: surface layers have more sand and less clay (more weathering), while subsurface is finer textured (less weathering, more clay accumulation).
+
+## Component Weighting from SSURGO
+
+When working with U.S. Soil Survey data, weight components by their representativeness within each map unit:
+
+```{r, eval = FALSE}
+# SSURGO component data structure
+ssurgo_data <- data.frame(
+  mukey = c(1, 1, 1, 2, 2),
+  comppct = c(40, 35, 25, 60, 40),  # % of map unit
+  sand = c(30, 25, 20, 15, 18),
+  silt = c(55, 60, 65, 70, 70),
+  clay = c(15, 15, 15, 15, 12)
+)
+
+# Weight-average texture within each map unit
+weighted <- gc_weight_components(
+  comp_data = ssurgo_data,
+  mukey_col = "mukey",
+  comppct_col = "comppct",
+  component_names = c("sand", "silt", "clay")
+)
+```
+
+Result: one representative composition per map unit.
+
+# Advanced: Ensemble Post-Processing and Validation
+
+## Aggregating Realizations into Summary Maps
+
+After generating multiple simulations, compute pixel-wise statistics:
+
+```{r, eval = FALSE}
+# Simulate multiple realizations (e.g., for uncertainty quantification)
+realizations <- vector("list", 10)
+for (i in 1:10) {
+  realizations[[i]] <- gc_sim_composition(
+    object = fitted_model,
+    locations = locations,
+    nsim = 1
+  )
+}
+
+# Aggregate ensemble statistics
+ensemble_stats <- gc_aggregate_realizations(
+  realizations = realizations,
+  components = c("sand", "silt", "clay"),
+  stats = c("mean", "sd", "p05", "p95"),
+  verbose = TRUE
+)
+
+# Result: multi-layer SpatRaster with named layers:
+# "sand_mean", "sand_sd", "sand_p05", "sand_p95", 
+# "silt_mean", "silt_sd", ... and so on
+
+# Visualization:
+terra::plot(ensemble_stats)  # View all statistics
+sand_mean <- ensemble_stats$sand_mean
+plot(sand_mean, main = "Mean Sand Content")
+```
+
+## Validating Ensemble Quality
+
+Check that realizations satisfy compositional constraints:
+
+```{r, eval = FALSE}
+validation <- gc_validate_realizations(
+  realizations = realizations,
+  components = c("sand", "silt", "clay"),
+  target_sum = 100,
+  sum_tolerance = 1,
+  constraints = list(
+    sand = list(min = 0, max = 40),
+    silt = list(min = 50, max = 80),
+    clay = list(min = 10, max = 20)
+  ),
+  verbose = TRUE
+)
+
+# Review validation results
+print(validation$summary)  # Per-component validation metrics
+plot(validation$violations_map, main = "Constraint Violations")
+
+# Interpretation:
+# - violations_map: pixel values = number of constraints violated
+# - summary: percent_valid, mean, sd per component
+# High percent_valid (>95%) indicates realizations well-constrained
+```
+
+## Pre-Simulation Data Validation
+
+Before starting simulation, perform a comprehensive data quality check:
+
+```{r, eval = FALSE}
+validation <- gc_validate_input_data(
+  data = your_data,
+  component_names = c("sand", "silt", "clay"),
+  x_coord = "x",
+  y_coord = "y",
+  target_sum = 100,
+  sum_tolerance = 1,
+  check_spatial = TRUE,
+  check_outliers = TRUE,
+  verbose = TRUE
+)
+
+# Checks include:
+# - Structural: required columns, complete rows, numeric types
+# - Compositional: sum constraints, component ranges, zero-handling
+# - Spatial: coordinate systems, duplicates, extent, spacing
+# - Statistical: outliers, missing values, sample size
+
+if (!validation$valid) {
+  cat("Issues found:\n")
+  print(validation$issues)
+  cat("\nRecommendations:\n")
+  for (rec in validation$recommendations) cat(" -", rec, "\n")
+} else {
+  cat("Data passed all checks! Ready to proceed.\n")
+}
+```
+
+# Generalizing to Other Compositional Data
+
+
+While this vignette focuses on soil texture (sand, silt, clay), the **geocoda** workflow is applicable to any compositional data where components sum to a constant. Here are examples of how to adapt the framework:
+
+## Geochemistry: Major Oxide Percentages
+
+For whole-rock geochemical analyses, adapt the constraints to element or oxide percentages:
+
+```{r, eval = FALSE}
+# Major oxides in volcanic rocks (% by weight)
+constraints <- list(
+  SiO2 = list(min = 45, max = 75),
+  Al2O3 = list(min = 12, max = 20),
+  FeO = list(min = 5, max = 15),
+  MgO = list(min = 2, max = 12),
+  CaO = list(min = 5, max = 15),
+  Na2O = list(min = 2, max = 6),
+  K2O = list(min = 0, max = 5),
+  other = list(min = 0, max = 2)  # Remaining oxides
+)
+
+grid <- gc_expand_bounds(constraints, step = 0.5, target_sum = 100)
+samples <- gc_resample_compositions(grid, n = 500, method = "uniform")
+# ... proceed with standard workflow
+```
+
+## Vegetation: Species Abundance Proportions
+
+For vegetation surveys where species abundances must sum to 100% coverage:
+
+```{r, eval = FALSE}
+# Plant community composition at survey locations
+constraints <- list(
+  shrub_A = list(min = 0, max = 50),
+  shrub_B = list(min = 10, max = 60),
+  grass = list(min = 20, max = 70),
+  forb = list(min = 0, max = 30),
+  litter = list(min = 5, max = 40)
+)
+
+grid <- gc_expand_bounds(constraints, step = 1.0, target_sum = 100)
+# Resample using uniform or weighted methods
+samples <- gc_resample_compositions(grid, n = 300, method = "uniform")
+
+# The ILR transformation creates uncorrelated axes in log-ratio space
+# Variograms of ILR dimensions capture spatial correlation of plant compositions
+```
+
+## Mineralogy: Phase Percentages
+
+For X-ray diffraction (XRD) mineral analysis where identified phases sum to 100%:
+
+```{r, eval = FALSE}
+# Mineral assemblage (% crystalline)
+constraints <- list(
+  quartz = list(min = 20, max = 60),
+  feldspar = list(min = 15, max = 50),
+  mica = list(min = 5, max = 25),
+  clay = list(min = 10, max = 40),
+  other = list(min = 0, max = 5)
+)
+
+grid <- gc_expand_bounds(constraints, step = 1.0, target_sum = 100)
+# ... workflow proceeds identically
+```
+
+## Microflora: Microbial Abundance Ratios
+
+For relative abundance data from 16S rRNA or metagenomic sequencing (normalized to proportions):
+
+```{r, eval = FALSE}
+# Bacterial phyla as relative abundances
+constraints <- list(
+  Actinobacteria = list(min = 0, max = 40),
+  Acidobacteria = list(min = 5, max = 50),
+  Proteobacteria = list(min = 20, max = 60),
+  Firmicutes = list(min = 0, max = 20),
+  other = list(min = 5, max = 15)
+)
+
+# Important: Normalize count data to proportions (e.g., using rclr transformation)
+# before applying geocoda workflow
+```
+
+## Key Adaptations Across Domains
+
+Regardless of domain, follow these principles:
+
+1. **Normalize to proportions**: Ensure components sum to a constant (100%, 1.0, etc.)
+2. **Set realistic constraints**: Use domain knowledge or literature values as bounds
+3. **Adjust sampling resolution**: Use `step` parameter based on expected precision
+4. **Validate sample statistics**: Check that bootstrap samples have reasonable statistics before modeling
+5. **Assess domain stationarity**: Use `gc_assess_stationarity()` to check if spatial trend exists
+6. **Inspect transformed data**: Plot ILR values to verify they are approximately Gaussian
+
+The ILR transformation automatically handles the compositional geometry; no additional modifications are needed.
+
 # References
 
-- Aitchison, J. (1986). The Statistical Analysis of Compositional Data.
-- Egozcue et al. (2003). Isometric logratio transformations for compositional data analysis.
-- Chilès, J.P. & Delfiner, P. (2012). Geostatistics: Modeling Spatial Uncertainty.
+- Aitchison, J. (1986). *The Statistical Analysis of Compositional Data*.
+  Chapman and Hall, London. ISBN: 978-0-412-28060-3.
+
+- Egozcue, J. J., Pawlowsky-Glahn, V., Mateu-Figueras, G., & Barceló-Vidal, C. (2003).
+  Isometric Log-Ratio Transformations for Compositional Data Analysis.
+  *Mathematical Geology*, 35(3), 279–300.
+  https://doi.org/10.1023/A:1023818214614
+
+- Chilès, J. P., & Delfiner, P. (2012). *Geostatistics: Modeling Spatial Uncertainty* (2nd ed.).
+  Wiley, Hoboken, NJ.
+  https://doi.org/10.1002/9781118383087
+
+- Tolosana-Delgado, R., Mueller, U., & van den Boogaart, K. G. (2012).
+  Geostatistics for Compositional Data: An Overview.
+  *Mathematical Geosciences*, 44(4), 465–479.
+  https://doi.org/10.1007/s11004-011-9363-4
+

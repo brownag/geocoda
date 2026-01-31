@@ -115,7 +115,6 @@ gc_assess_stationarity <- function(data,
 
   spatial_variance <- (spatial_pc1_var + spatial_pc2_var) / 2
 
-  loadings_scale <- sqrt(colSums(pca_result$rotation^2))
   is_stationary <- spatial_variance < 0.1
 
   if (plot) {

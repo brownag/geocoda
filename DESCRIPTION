@@ -1,14 +1,18 @@
 Package: geocoda
-Title: Spatial Simulation of Compositional Data
-Version: 0.1.0
+Title: Geostatistical Simulation of Soil Compositional Data
+Version: 0.2.0
+Author: Andrew G. Brown
 Authors@R: person("Andrew", "Brown", , "brown.andrewg@gmail.com", role = c("aut", "cre"))
 Maintainer: Andrew G. Brown <brown.andrewg@gmail.com>
-Description: Implements a workflow for geostatistical simulation of compositional 
-    data using Isometric Log-Ratio (ILR) transformations. Supports defining validity 
-    constraints, estimating multivariate covariance, and generating consistent spatial 
-    fields that strictly honor sum constraints. While applicable to any compositional 
-    data (e.g., geochemistry, vegetation classes), the primary application is spatial 
-    simulation of soil texture separates (sand, silt, clay).
+Description: Complete geostatistical workflow for spatial simulation and mapping of soil 
+    compositional data (sand, silt, clay percentages) using Isometric Log-Ratio (ILR) 
+    transformations. Features include kriging-based simulation with compositional 
+    constraints, gap-filling via bootstrap resampling for sparse data, multi-source data 
+    integration, ensemble post-processing with texture classification, and hierarchical
+    Bayesian zone-based modeling. Includes diagnostic functions for cross-validation and 
+    uncertainty quantification, live SSURGO queries via soilDB. Applicable to any 
+    compositional data; primary focus is soil texture mapping for precision agriculture 
+    and environmental applications.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
@@ -19,10 +23,14 @@ Imports:
     terra,
     sf,
     stats,
-    methods
+    methods,
+    digest,
+    parallel,
+    cluster
 Suggests:
     aqp,
     zCompositions,
+    soilDB,
     testthat (>= 3.0.0),
     knitr,
     rmarkdown

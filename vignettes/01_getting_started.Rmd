@@ -1,0 +1,165 @@
+---
+title: "Getting Started with geocoda"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting Started}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5
+)
+```
+
+## Overview
+
+This vignette demonstrates a complete workflow for geostatistical simulation of soil texture with automatic compositional constraints. Soil texture (sand, silt, clay) must sum to 100%; geocoda enforces this through **Isometric Log-Ratio (ILR)** transformations, which convert constrained data to unconstrained space for standard geostatistics, then back-transform results with constraints guaranteed.
+
+---
+
+## Workflow
+
+### 1. Initialize
+
+Load required libraries and define valid texture ranges for your domain.
+
+```{r load_package, message = FALSE}
+library(geocoda)
+library(terra)
+library(gstat)
+library(sf)
+
+constraints <- list(
+  SAND = list(min = 5,  max = 80),
+  SILT = list(min = 0,  max = 75),
+  CLAY = list(min = 0,  max = 60)
+)
+```
+
+### 2. Estimate ILR Parameters
+
+Draw samples from valid texture space to estimate the mean composition and covariance structure in ILR space.
+
+```{r estimate_params}
+valid_grid <- gc_expand_bounds(constraints, step = 2, target_sum = 100)
+
+set.seed(123)
+boot_samples <- gc_resample_compositions(
+  composition_grid = valid_grid,
+  n = 500,
+  method = "uniform"
+)
+
+ilr_params <- gc_ilr_params(boot_samples$samples)
+ilr_params$mean
+```
+
+### 3. Define Spatial Structure
+
+Specify how soil texture changes with distance.
+
+```{r variogram_model}
+vgm_model <- vgm(
+  psill = 0.5,
+  model = "Exp",
+  range = 30,
+  nugget = 0.1
+)
+
+krig_model <- gc_ilr_model(
+  ilr_params = ilr_params,
+  variogram_model = vgm_model
+)
+```
+
+### 4. Create Prediction Grid
+
+```{r create_grid}
+pred_locations <- expand.grid(
+  x = seq(0, 100, by = 10),
+  y = seq(0, 100, by = 10)
+)
+
+pred_grid <- st_as_sf(
+  pred_locations,
+  coords = c("x", "y"),
+  crs = NA
+)
+```
+
+### 5. Simulate
+
+Generate multiple spatial realizations. Each realization is an equally-likely map that respects the spatial correlation and compositional constraints.
+
+```{r simulate}
+realizations <- gc_sim_composition(
+  model = krig_model,
+  locations = pred_grid,
+  nsim = 5,
+  target_names = c("SAND", "SILT", "CLAY")
+)
+
+realizations
+```
+
+Verify the constraint is satisfied across all realizations:
+
+```{r verify}
+sums <- realizations$SAND.sim1 + realizations$SILT.sim1 + realizations$CLAY.sim1
+range(values(sums), na.rm = TRUE)
+```
+
+---
+
+## Output Structure
+
+The result is a `SpatRaster` with multiple layers:
+- `SAND.sim1`, `SILT.sim1`, `CLAY.sim1` for the first realization
+- `SAND.sim2` through `CLAY.sim5` for the remaining four realizations
+
+Each layer automatically satisfies `SAND + SILT + CLAY = 100%`.
+
+---
+
+## Next Steps
+
+**Summarize the ensemble:**
+
+```{r ensemble_summary, eval = FALSE}
+summary_maps <- gc_aggregate_realizations(
+  realizations,
+  statistics = c("mean", "sd", "median")
+)
+```
+
+**Include observed field data (conditional simulation):**
+
+Observed samples should be passed to `gc_ilr_model()` to enforce exact matches at sample locations while maintaining spatial correlation elsewhere.
+
+**Multi-zone analysis:**
+
+For surveys spanning multiple regions with distinct soil properties, use hierarchical models to borrow strength across zones while respecting local differences. See `?gc_fit_zone_models()`.
+
+**Variogram fitting from data:**
+
+Rather than specifying the variogram manually, estimate it directly from your observations using `gc_fit_vgm()`.
+
+---
+
+## References
+
+- `?gc_ilr_params()` -- Estimate ILR parameters
+- `?gc_ilr_model()` -- Build kriging model
+- `?gc_sim_composition()` -- Generate realizations
+- `?gc_aggregate_realizations()` -- Summarize ensemble
+- `vignette("02_zonal_simulation")` -- Variogram fitting details
+- `vignette("07_real_world_casestudy")` -- Complete example
+
+**Congratulations!** You're ready to apply geocoda to your soil mapping project.
+
+For questions, visit: [https://github.com/brownag/geocoda](https://github.com/brownag/geocoda)

@@ -44,9 +44,17 @@ samples <- data.frame(
   clay = c(20, 20, 20, 20)
 )
 
-params <- estimate_ilr_params(samples)
+params <- gc_ilr_params(samples)
 str(params)
 print(params$mean)
 print(params$cov)
 
+}
+\references{
+Egozcue, J. J., Pawlowsky-Glahn, V., Mateu-Figueras, G., & Barceló-Vidal, C. (2003).
+Isometric Log-Ratio Transformations for Compositional Data Analysis.
+\emph{Mathematical Geology}, 35(3), 279-300. https://doi.org/10.1023/A:1023818214614
+
+Aitchison, J. (1986). The Statistical Analysis of Compositional Data.
+Chapman and Hall, London.
 }

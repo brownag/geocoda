@@ -1,0 +1,379 @@
+@article{Aitchison1982,
+  author = {Aitchison, J.},
+  title = {The Statistical Analysis of Compositional Data},
+  journal = {Journal of the Royal Statistical Society: Series B (Methodological)},
+  volume = {44},
+  number = {2},
+  pages = {139--177},
+  year = {1982},
+  doi = {10.1111/j.2517-6161.1982.tb01195.x},
+  note = {Foundational work establishing the simplex geometry of compositional data
+          and demonstrating why standard correlation, PCA, and regression fail when
+          applied to constrained proportions (sum=100\%). Introduces the closure problem
+          and spurious correlation. Provides core theoretical justification for why
+          geocoda transforms to ILR space before geostatistical modeling. Essential
+          background for understanding gc_ilr_params(), gc_expand_bounds(), and automatic
+          sum constraint enforcement.}
+}
+
+@book{Aitchison1986,
+  author = {Aitchison, J.},
+  title = {The Statistical Analysis of Compositional Data},
+  publisher = {Chapman and Hall},
+  year = {1986},
+  address = {London},
+  isbn = {978-0-412-28060-3},
+  note = {Seminal monograph presenting comprehensive compositional data analysis framework
+          including additive and centered log-ratio transformations (precursors to ILR).
+          Establishes Aitchison geometry and distance measures used to assess compositional
+          similarity. Theoretical foundation for geocoda's treatment of soil texture as
+          constrained 3-part composition. Recommended reading for users new to compositional
+          methods. Reprinted by Blackburn Press (2003).}
+}
+
+@article{Egozcue2003,
+  author = {Egozcue, J. J. and Pawlowsky-Glahn, V. and Mateu-Figueras, G. and Barceló-Vidal, C.},
+  title = {Isometric Log-Ratio Transformations for Compositional Data Analysis},
+  journal = {Mathematical Geology},
+  volume = {35},
+  number = {3},
+  pages = {279--300},
+  year = {2003},
+  doi = {10.1023/A:1023818214614},
+  note = {Defines the Isometric Log-Ratio (ILR) transformation, the core mathematical
+          tool underlying all geocoda workflows. ILR creates orthonormal coordinates on
+          the simplex, enabling standard geostatistics in transformed space. Used in
+          gc_ilr_params() to compute ILR mean and covariance from samples, and in
+          gc_sim_composition() for back-transformation to original units. The transformation
+          matrix constructed from sequential binary partitions ensures compositional constraints
+          are preserved after kriging/simulation. Essential for understanding why sum=100\%
+          is automatically satisfied. Open access via https://doi.org/10.1023/A:1023818214614}
+}
+
+@book{Pawlowsky-Glahn2015,
+  author = {Pawlowsky-Glahn, V. and Egozcue, J. J. and Tolosana-Delgado, R.},
+  title = {Modeling and Analysis of Compositional Data},
+  publisher = {Wiley},
+  year = {2015},
+  address = {Chichester, UK},
+  isbn = {978-1-119-90848-4},
+  doi = {10.1002/9781119368571},
+  note = {Modern comprehensive reference on compositional data theory and practice.
+          Covers ILR transformations (Ch. 3-4), statistical inference in the simplex (Ch. 6),
+          and spatial methods for compositions (Ch. 10). Provides updated treatment of
+          Aitchison geometry, zero values, and subcompositional dominance. Recommended for
+          geocoda users seeking theoretical depth on why ILR-based methods are optimal for
+          constrained data. DOI: https://doi.org/10.1002/9781119368571}
+}
+
+@book{Goovaerts1997,
+  author = {Goovaerts, P.},
+  title = {Geostatistics for Natural Resources Evaluation},
+  publisher = {Oxford University Press},
+  year = {1997},
+  address = {Oxford},
+  isbn = {978-0-19-511538-9},
+  note = {Comprehensive applied geostatistics reference covering kriging algorithms
+          (Ch. 4-5), simulation methods (Ch. 6), uncertainty assessment (Ch. 7), and
+          spatial data integration (Ch. 8). Provides implementation details for techniques
+          used in gc_fit_vgm(), gc_ilr_model() (kriging), gc_sim_composition() (simulation),
+          and gc_aggregate_realizations() (ensemble post-processing). Essential for
+          understanding variogram modeling choices, neighborhood search strategies, and
+          cross-validation approaches. Practical guide for geocoda practitioners.}
+}
+
+@book{Chilès2012,
+  author = {Chilès, J. P. and Delfiner, P.},
+  title = {Geostatistics: Modeling Spatial Uncertainty},
+  edition = {2nd},
+  publisher = {Wiley},
+  year = {2012},
+  address = {Hoboken, NJ},
+  isbn = {978-1-118-31323-7},
+  doi = {10.1002/9781118383087},
+  note = {Authoritative second edition covering modern geostatistics theory and practice.
+          Ch. 2 (random functions), Ch. 3 (variograms), Ch. 4 (kriging), and Ch. 7 (simulation)
+          provide theoretical foundations for geocoda's spatial modeling. The multivariate
+          methods (Ch. 6) underpin the Linear Model of Coregionalization (LMC) option in
+          gc_ilr_model(model_type='lmc'). Recommended for users needing rigorous mathematical
+          treatment of geostatistical concepts. DOI: https://doi.org/10.1002/9781118383087}
+}
+
+@book{Wackernagel2003,
+  author = {Wackernagel, H.},
+  title = {Multivariate Geostatistics: An Introduction with Applications},
+  edition = {3rd},
+  publisher = {Springer-Verlag},
+  year = {2003},
+  address = {Berlin},
+  isbn = {978-3-662-05294-5},
+  doi = {10.1007/978-3-662-05294-5},
+  note = {Practical introduction to multivariate geostatistics with worked examples.
+          Ch. 7 on edge effects and boundary conditions informs gap-filling methods in
+          gc_handle_zeros() and edge handling in gc_expand_bounds(). Ch. 10-11 on cokriging
+          and colocation provide theoretical basis for multi-source data integration in
+          gc_prepare_ssurgo_direct(). Accessible entry point for understanding multivariate
+          spatial methods. Third edition. DOI: https://doi.org/10.1007/978-3-662-05294-5}
+}
+
+@article{Pawlowsky1993,
+  author = {Pawlowsky-Glahn, V.},
+  title = {Join Count Analysis with a Regional Constraint: A Test for Spatial Association Between Categorical Maps},
+  journal = {Journal of Computational and Graphical Statistics},
+  volume = {2},
+  number = {1},
+  pages = {19--37},
+  year = {1993},
+  doi = {10.2307/1390959},
+  note = {Early work on spatial analysis for compositional data using join-count statistics.
+          Addresses spatial autocorrelation in categorical/compositional maps. Historical
+          context for development of compositional geostatistics methods. Less directly
+          applicable to geocoda's continuous simulation approach but relevant for understanding
+          field history. DOI: https://doi.org/10.2307/1390959}
+}
+
+@article{Ribeiro2001,
+  author = {Ribeiro Jr., P. J. and Diggle, P. J.},
+  title = {geoR: A Package for Geostatistical Analysis},
+  journal = {R-NEWS},
+  volume = {1},
+  number = {2},
+  pages = {15--18},
+  year = {2001},
+  url = {https://www.r-project.org/doc/Rnews/},
+  note = {Introduces geoR package, an alternative R geostatistics implementation to gstat.
+          While geocoda uses gstat, this paper provides context on R-based geostatistical
+          workflows, variogram modeling choices, and kriging implementation trade-offs.
+          Useful for users familiar with geoR seeking to understand geocoda's gstat-based approach.
+          R-NEWS archive available at https://www.r-project.org/doc/Rnews/}
+}
+
+@manual{VandenBoogaart2023,
+  author = {van den Boogaart, K. G. and Tolosana-Delgado, R. and Bren, M.},
+  title = {compositions: Compositional Data Analysis},
+  year = {2023},
+  url = {https://CRAN.R-project.org/package=compositions},
+  note = {R package 'compositions' providing ILR transformation functions used throughout
+          geocoda. The ilr(), acomp(), and ilrInv() functions from this package handle all
+          forward and back-transformations in gc_ilr_params(), gc_sim_composition(), and
+          gc_aggregate_realizations(). Implements Aitchison geometry operations and
+          compositional distances. Core dependency for compositional algebra. Open-source
+          R package available on CRAN: https://CRAN.R-project.org/package=compositions}
+}
+
+@book{Deutsch1992,
+  author = {Deutsch, C. V. and Journel, A. G.},
+  title = {GSLIB: Geostatistical Software Library and User's Guide},
+  publisher = {Oxford University Press},
+  year = {1992},
+  address = {New York},
+  isbn = {978-0-195-07529-7},
+  note = {Reference manual for GSLIB (Geostatistical Software Library) algorithms.
+          Ch. 4-5 describe sequential Gaussian simulation and conditional simulation methods
+          that inspired gstat's simulation engine (used by gc_sim_composition()). Provides
+          algorithmic details on simulation pathways, kriging neighborhoods, and realization
+          generation. Useful for understanding computational aspects of geocoda's simulation
+          workflow. Fortran code available at www.gslib.com.}
+}
+
+@book{Journel1989,
+  author = {Journel, A. G. and Huijbregts, C. J.},
+  title = {Mining Geostatistics},
+  publisher = {Academic Press},
+  year = {1989},
+  address = {London},
+  isbn = {978-0-122-42960-9},
+  note = {Classic foundational text establishing geostatistical theory for mining applications.
+          Introduces variogram modeling (Ch. 2), ordinary kriging (Ch. 3), and simulation
+          principles (Ch. 5) that underpin modern geostatistics packages. Historical context
+          for methods implemented in geocoda via gstat. Valuable for understanding theoretical
+          development of spatial estimation and uncertainty modeling. Reprinted 2003 by
+          Blackburn Press.}
+}
+
+@article{ThioHenestrosa2003,
+  author = {Thió-Henestrosa, S. and Martín-Fernández, J. A.},
+  title = {Dealing with Compositional Data: The Fcompositions Package},
+  journal = {Computational Statistics \& Data Analysis},
+  volume = {43},
+  number = {4},
+  pages = {523--536},
+  year = {2003},
+  doi = {10.1016/S0167-9473(02)00286-8},
+  note = {Early implementation of compositional data methods in R (precursor to 'compositions'
+          package). Describes algorithms for log-ratio transformations and compositional
+          statistics. Historical reference for understanding evolution of R compositional
+          data analysis tools. Open access via https://doi.org/10.1016/S0167-9473(02)00286-8}
+}
+
+@article{Lark2009,
+  author = {Lark, R. M.},
+  title = {Analysis of Differences in Kriged Loamy Clay Content Between Two Soil Survey Datasets at Two Scales},
+  journal = {Soil Science Society of America Journal},
+  volume = {73},
+  number = {5},
+  pages = {1662--1672},
+  year = {2009},
+  doi = {10.2136/sssaj2008.0387},
+  note = {Soil science application of geostatistics demonstrating kriging for soil texture
+          (loamy clay) across different survey scales. Provides practical case study of
+          variogram modeling for soil properties and cross-survey comparison methods. Example
+          of the type of soil survey applications geocoda is designed for, illustrating
+          challenges of integrating legacy survey data with modern observations. Open access
+          via https://doi.org/10.2136/sssaj2008.0387}
+}
+
+@article{Tolosana-Delgado2012,
+  author = {Tolosana-Delgado, R. and Mueller, U. and van den Boogaart, K. G.},
+  title = {Geostatistics for Compositional Data: An Overview},
+  journal = {Mathematical Geosciences},
+  volume = {44},
+  number = {4},
+  pages = {465--479},
+  year = {2012},
+  doi = {10.1007/s11004-011-9363-4},
+  note = {Comprehensive overview of geostatistics for compositional data, directly relevant
+          to geocoda's methodology. Discusses ILR-based variogram modeling, compositional
+          kriging, and simulation approaches. Compares different transformation strategies
+          and their impact on spatial inference. Essential reading for understanding theoretical
+          foundations and methodological choices in geocoda's design. Bridges compositional
+          analysis (Aitchison/Egozcue) and geostatistics (Chilès/Goovaerts). Open access
+          via https://doi.org/10.1007/s11004-011-9363-4}
+}
+
+@article{Papritz2001,
+  author = {Papritz, A. and Dubois, J. P.},
+  title = {Mapping Heavy Metals in Soils by Geostatistical Medians},
+  journal = {Soil Science Society of America Journal},
+  volume = {65},
+  number = {4},
+  pages = {1264--1276},
+  year = {2001},
+  doi = {10.2136/sssaj2001.6541264x},
+  note = {Demonstrates robust geostatistical methods for soil heavy metal mapping using
+          median-based estimators. While geocoda uses mean-based kriging, this paper illustrates
+          alternative approaches for handling outliers and non-Gaussian distributions in soil
+          data. Relevant for users considering extensions to geocoda for contaminated soil
+          applications. DOI: https://doi.org/10.2136/sssaj2001.6541264x}
+}
+
+@Article{Pebesma2004,
+  author = {Edzer J. Pebesma},
+  title = {Multivariable geostatistics in S: the gstat package},
+  journal = {Computers \& Geosciences},
+  year = {2004},
+  volume = {30},
+  pages = {683--691},
+  doi = {10.1016/j.cageo.2004.03.012},
+  note = {Core geostatistical engine powering geocoda's kriging and simulation.
+          Used by gc_ilr_model() to construct variogram models, gc_fit_vgm()
+          for empirical variogram fitting, and gc_sim_composition() for
+          conditional/unconditional simulation. Implements Linear Model of
+          Coregionalization (LMC) option. Open access via https://doi.org/10.1016/j.cageo.2004.03.012}
+}
+
+@Manual{Hijmans2024,
+  title = {terra: Spatial Data Analysis},
+  author = {Robert J. Hijmans},
+  year = {2024},
+  url = {https://CRAN.R-project.org/package=terra},
+  note = {R package version 1.7-71. Primary raster data structure for all geocoda outputs.
+          Functions like gc_sim_composition() return SpatRaster objects with named layers
+          (sand.sim1, silt.sim1, etc.). Enables efficient storage and manipulation
+          of large ensemble realizations. Supports multi-layer raster operations and
+          fast disk I/O for large spatial datasets.}
+}
+
+@Article{Pebesma2018,
+  author = {Edzer Pebesma},
+  title = {Simple Features for R: Standardized Support for Spatial Vector Data},
+  journal = {The R Journal},
+  year = {2018},
+  volume = {10},
+  number = {1},
+  pages = {439--446},
+  doi = {10.32614/RJ-2018-009},
+  url = {https://doi.org/10.32614/RJ-2018-009},
+  note = {Spatial data structures for point observations and polygon zones.
+          Used throughout geocoda for input data (sample locations), prediction
+          grids, and zone boundaries in hierarchical models. Essential for
+          spatial indexing and CRS transformations. Open access via https://doi.org/10.32614/RJ-2018-009}
+}
+
+@Manual{Beaudette2023,
+  title = {soilDB: Soil Database Interface},
+  author = {Dylan Beaudette and Jay Skovlin and Stephen Roecker and Andrew Brown},
+  year = {2023},
+  url = {https://CRAN.R-project.org/package=soilDB},
+  note = {R package version 2.8.0. Enables live SSURGO/SDA database queries via
+          gc_prepare_ssurgo_direct() and gc_fetch_sda_properties(). Provides access to
+          USDA-NRCS soil survey data for integration with field observations. Critical for
+          real-world applications combining survey maps with point samples. Implements SDA
+          API access with caching and timeout options.}
+}
+
+@Article{PalareaaAlbaladejo2015,
+  author = {Javier Palarea-Albaladejo and Josep Antoni Martín-Fernández},
+  title = {zCompositions -- {R} package for multivariate imputation of left-censored data under a compositional approach},
+  journal = {Chemometrics and Intelligent Laboratory Systems},
+  year = {2015},
+  volume = {143},
+  pages = {85--96},
+  doi = {10.1016/j.chemolab.2015.02.019},
+  url = {https://doi.org/10.1016/j.chemolab.2015.02.019},
+  note = {Theoretical foundation for zero/missing value handling in compositional
+          data. Methods implemented in gc_handle_zeros() including multiplicative
+          zero replacement (mzero), additive zero (azero), and log-ratio EM (lrem).
+          Essential for edge-case handling where soil texture measurements contain
+          trace components or detection limits. Open access via https://doi.org/10.1016/j.chemolab.2015.02.019}
+}
+
+@Manual{Genz2024,
+  title = {mvtnorm: Multivariate Normal and t Distributions},
+  author = {Alan Genz and Frank Bretz and Tetsuhisa Miwa and Xuefei Mi and
+            Friedrich Leisch and Fabian Scheipl and Torsten Hothorn},
+  year = {2024},
+  url = {https://CRAN.R-project.org/package=mvtnorm},
+  note = {R package version 1.2-4. Enables multivariate normal simulation for
+          generating ILR realizations. Used internally when simulating from ILR
+          covariance structures in gc_sim_composition(). Critical for uncertainty
+          propagation and ensemble generation with exact multivariate normal sampling.}
+}
+
+@Book{USDA2017,
+  author = {{Soil Survey Division Staff}},
+  title = {Soil Survey Manual},
+  publisher = {U.S. Department of Agriculture Handbook No. 18},
+  year = {2017},
+  url = {https://www.nrcs.usda.gov/resources/guides-and-instructions/soil-survey-manual},
+  note = {Official USDA soil texture classification system defining particle size
+          limits (sand: 0.05--2mm, silt: 0.002--0.05mm, clay: <0.002mm) and textural
+          triangle. Provides standard constraints used in gc_expand_bounds() when
+          method='soil_texture'. Foundational reference for soil survey applications
+          and constraint specification.}
+}
+
+@Misc{NRCSSSURGO,
+  author = {{Natural Resources Conservation Service}},
+  title = {Soil Survey Geographic ({SSURGO}) Database},
+  year = {2024},
+  publisher = {United States Department of Agriculture},
+  url = {https://www.nrcs.usda.gov/resources/data-and-reports/soil-survey-geographic-ssurgo-database},
+  note = {Primary soil survey database for the United States, providing spatial
+          polygon data and soil property estimates. Accessed via gc_prepare_ssurgo_direct()
+          and gc_fetch_sda_properties() through the Soil Data Access (SDA) API.
+          Enables integration of authoritative survey data with field observations.}
+}
+
+@Misc{NRCSSDA,
+  author = {{Natural Resources Conservation Service}},
+  title = {Soil Data Access ({SDA}) {API}},
+  year = {2024},
+  publisher = {United States Department of Agriculture},
+  url = {https://sdmdataaccess.nrcs.usda.gov/},
+  note = {Web service API for querying SSURGO database by spatial extent or
+          map unit key. Used by geocoda SSURGO integration functions with
+          configurable timeouts, caching, and component weighting. Documented
+          in vignettes/30_ssurgo_integration.Rmd. Provides programmatic access
+          to official soil survey map unit components and properties.}
+}

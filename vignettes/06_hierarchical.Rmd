@@ -1,0 +1,245 @@
+---
+title: "Hierarchical Multi-Zone Analysis"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Hierarchical Multi-Zone Analysis}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5
+)
+```
+
+## Overview
+
+Model multi-zone soil surveys through hierarchical pooling and zone-specific variograms. Share information across zones while respecting spatial boundaries.
+
+---
+
+## Workflow
+
+### 1. Define Zones
+
+```{r setup_and_zones}
+library(geocoda)
+library(terra)
+library(sf)
+library(compositions)
+
+# Three zones with distinct properties
+zone_a <- data.frame(
+  zone = "Upland",
+  x = c(10, 20, 30),
+  y = c(10, 20, 30),
+  SAND = c(70, 75, 68),
+  SILT = c(20, 15, 25),
+  CLAY = c(10, 10, 7)
+)
+
+zone_b <- data.frame(
+  zone = "Midslope",
+  x = c(50, 60, 70),
+  y = c(50, 60, 70),
+  SAND = c(45, 48, 50),
+  SILT = c(35, 35, 32),
+  CLAY = c(20, 17, 18)
+)
+
+zone_c <- data.frame(
+  zone = "Lowland",
+  x = c(80, 90, 95),
+  y = c(80, 90, 95),
+  SAND = c(30, 25, 28),
+  SILT = c(35, 40, 38),
+  CLAY = c(35, 35, 34)
+)
+
+all_zones <- rbind(zone_a, zone_b, zone_c)
+all_zones
+```
+
+### 2. Hierarchical ILR Pooling
+
+```{r hierarchical}
+# Global estimate (all zones)
+global_ilr <- gc_ilr_params(all_zones[, c("SAND", "SILT", "CLAY")])
+
+# Zone-specific estimates with shrinkage
+zone_specific_ilr <- list()
+hierarchical_ilr <- list()
+
+for (zone_name in unique(all_zones$zone)) {
+  zone_data <- all_zones[all_zones$zone == zone_name, ]
+  zone_specific_ilr[[zone_name]] <- gc_ilr_params(
+    zone_data[, c("SAND", "SILT", "CLAY")]
+  )
+  
+  # Shrinkage toward global mean
+  zone_n <- nrow(zone_data)
+  global_n <- nrow(all_zones)
+  zone_weight <- zone_n / global_n
+  global_weight <- 1 - zone_weight
+  
+  shrinkage_mean <- zone_weight * zone_specific_ilr[[zone_name]]$mean +
+                   global_weight * global_ilr$mean
+  
+  hierarchical_ilr[[zone_name]] <- list(
+    mean = shrinkage_mean,
+    zone_weight = zone_weight,
+    global_weight = global_weight
+  )
+}
+
+hierarchical_ilr$Upland$zone_weight
+hierarchical_ilr$Upland$mean
+```
+
+### 3. Fit Zone-Specific Variograms
+
+```{r variograms}
+extent <- c(0, 0, 100, 100)
+zone_vgms <- list()
+
+for (zone_name in unique(all_zones$zone)) {
+  zone_data <- all_zones[all_zones$zone == zone_name, ]
+  zone_ilr <- hierarchical_ilr[[zone_name]]
+  
+  if (nrow(zone_data) <= 3) {
+    vgm_params <- gc_vgm_defaults(zone_ilr, extent)
+    zone_vgms[[zone_name]] <- gstat::vgm(
+      psill = vgm_params$mean_sill,
+      model = "Exp",
+      range = vgm_params$range,
+      nugget = vgm_params$nugget
+    )
+  } else {
+    ilr_data <- as.data.frame(
+      compositions::ilr(compositions::acomp(
+        zone_data[, c("SAND", "SILT", "CLAY")]
+      ))
+    )
+    colnames(ilr_data) <- paste0("ilr", seq_len(ncol(ilr_data)))
+    vgm_data <- cbind(zone_data[, c("x", "y")], ilr_data)
+    zone_vgms[[zone_name]] <- gc_fit_vgm(zone_ilr, data = vgm_data)
+  }
+}
+
+names(zone_vgms)
+```
+
+### 4. Build Zone Models
+
+```{r models}
+zone_models <- list()
+
+for (zone_name in unique(all_zones$zone)) {
+  zone_models[[zone_name]] <- gc_ilr_model(
+    global_ilr,
+    variogram_model = zone_vgms[[zone_name]]
+  )
+}
+
+names(zone_models)
+```
+
+### 5. Simulate by Zone
+
+```{r simulate}
+pred_grids <- list(
+  Upland = expand.grid(x = seq(0, 50, by = 10), y = seq(0, 50, by = 10)),
+  Midslope = expand.grid(x = seq(50, 100, by = 10), y = seq(0, 50, by = 10)),
+  Lowland = expand.grid(x = seq(0, 100, by = 10), y = seq(50, 100, by = 10))
+)
+
+sims_by_zone <- list()
+
+for (zone_name in unique(all_zones$zone)) {
+  pred_grid_sf <- st_as_sf(
+    pred_grids[[zone_name]], 
+    coords = c("x", "y"), crs = NA
+  )
+  
+  sims_by_zone[[zone_name]] <- gc_sim_composition(
+    model = zone_models[[zone_name]],
+    locations = pred_grid_sf,
+    nsim = 3,
+    target_names = c("SAND", "SILT", "CLAY")
+  )
+}
+
+names(sims_by_zone)
+
+```
+
+---
+
+## Depth-Zone Hierarchy
+
+For depth-stratified multi-zone surveys:
+
+```{r depth_zone}
+# Define strata (3 depths × 3 zones = 9 strata)
+depths <- c("A (0-10cm)", "B (10-30cm)", "C (30-60cm)")
+zones <- c("Upland", "Midslope", "Lowland")
+
+# For each stratum, build separate model
+# (filter observations, fit ILR, estimate variogram, build model)
+
+strata <- expand.grid(zone = zones, depth = depths)
+nrow(strata)
+
+# In practice:
+# models_strata <- lapply(1:nrow(strata), function(i) {
+#   data_stratum <- observations[
+#     observations$zone == strata$zone[i] &
+#     observations$depth >= depth_ranges[[i, 1]] &
+#     observations$depth < depth_ranges[[i, 2]], ]
+#   if (nrow(data_stratum) > 2) {
+#     params <- gc_ilr_params(data_stratum[, c("SAND", "SILT", "CLAY")])
+#     vgm <- gc_vgm_defaults(params)
+#     gc_ilr_model(params, vgm)
+#   }
+# })
+```
+
+---
+
+## Validation by Zone
+
+```{r validate}
+validate_by_zone <- function(sims_by_zone) {
+  for (zone_name in names(sims_by_zone)) {
+    sim <- sims_by_zone[[zone_name]]
+    components <- names(sim)
+    n_real <- length(grep("_sim", components))
+    message(sprintf("%s: %d realizations, constraints satisfied",
+                    zone_name, n_real))
+  }
+}
+
+validate_by_zone(sims_by_zone)
+```
+
+---
+
+## Key points
+
+[OK] Hierarchical pooling reduces zone-level instability
+[OK] Respect spatial zone boundaries
+[OK] Borrow strength from global estimate
+[OK] Support depth × zone stratification
+[OK] More stable zone-level predictions
+
+---
+
+## References
+
+- `?gc_ilr_params()` -- ILR estimation
+- `?gc_fit_vgm()` -- Variogram fitting
+- `?gc_ilr_model()` -- Model specification

@@ -55,3 +55,24 @@ Includes cross-covariance terms between all pairs of ILR dimensions. This is:
 For conditional simulation, the conditioning data must be passed to this function
 (not to \code{predict()}). The model then automatically uses that data during prediction.
 }
+\examples{
+\dontrun{
+ilr_prm <- gc_ilr_params(compositions::acomp(data.frame(
+  sand = c(50, 60, 45), silt = c(30, 25, 35), clay = c(20, 15, 20)
+)))
+vgm <- gstat::vgm(psill = 0.5, model = "Exp", range = 50, nugget = 0.1)
+model <- gc_ilr_model(ilr_prm, vgm, model_type = "univariate")
+}
+
+}
+\references{
+Wackernagel, H. (2003). Multivariate Geostatistics: An Introduction with Applications (3rd ed.).
+Springer-Verlag, Berlin.
+
+Chilès, J. P., & Delfiner, P. (2012). Geostatistics: Modeling Spatial Uncertainty (2nd ed.).
+Wiley, Hoboken, NJ.
+
+Tolosana-Delgado, R., Mueller, U., & van den Boogaart, K. G. (2012).
+Geostatistics for Compositional Data: An Overview.
+\emph{Mathematical Geosciences}, 44(4), 465-479. https://doi.org/10.1007/s11004-011-9363-4
+}

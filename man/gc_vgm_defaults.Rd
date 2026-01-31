@@ -51,3 +51,7 @@ suggestions <- gc_vgm_defaults(params, extent)
 print(suggestions)
 
 }
+\references{
+Goovaerts, P. (1997). Geostatistics for Natural Resources Evaluation.
+Oxford University Press, Oxford.
+}

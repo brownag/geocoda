@@ -102,3 +102,11 @@ result_dl <- gc_handle_zeros(soil_samples, method = "lrem", dl = detection_limit
 }
 
 }
+\references{
+Aitchison, J. (1986). The Statistical Analysis of Compositional Data.
+Chapman and Hall, London.
+
+Thió-Henestrosa, S., & Martín-Fernández, J. A. (2003).
+Dealing with Compositional Data: The Fcompositions Package.
+\emph{Computational Statistics & Data Analysis}, 43, 523-536.
+}

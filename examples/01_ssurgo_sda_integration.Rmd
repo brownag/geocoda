@@ -1,0 +1,481 @@
+---
+title: "End-to-End Soil Texture Simulation from SSURGO Data"
+subtitle: "Phase 4 Integration: soilDB SDA + geocoda Geostatistical Simulation"
+author: "geocoda Package"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: show
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = TRUE,
+  warning = FALSE,
+  fig.width = 10,
+  fig.height = 7,
+  dpi = 100
+)
+
+# Suppress startup messages
+suppressPackageStartupMessages({
+  library(geocoda)
+  library(sf)
+  library(terra)
+  library(ggplot2)
+})
+```
+
+# Introduction
+
+This document demonstrates an end-to-end workflow for:
+1. **Fetching** soil survey data from SSURGO via the Soil Data Access (SDA) API using soilDB
+2. **Parameterizing** geostatistical constraints from compositional component data
+3. **Simulating** spatially correlated soil texture realizations
+4. **Validating** realization quality and ensemble statistics
+
+## Prerequisites
+
+This workflow requires three packages:
+- **soilDB**: Interface to soil databases (SSURGO, KSSL). Install via `install.packages('soilDB')`
+- **geocoda**: Geostatistical simulation framework (assumes installed from package source)
+- **tidyverse** (optional): Data manipulation (`ggplot2`)
+
+```{r eval=FALSE}
+# Install soilDB if needed
+install.packages('soilDB')
+```
+
+# Step 1: Query SSURGO Data via Soil Data Access API
+
+We'll fetch soil survey data for a specific map unit from SSURGO. In this example, we use 
+synthetic data (since live SDA queries require network access), but the code is ready for
+real SDA queries.
+
+```{r}
+# Option A (Synthetic): Create representative SSURGO data for demonstration
+# (This simulates what soilDB::get_SDA_property() would return)
+
+create_demo_ssurgo_data <- function() {
+  # Representative map unit with multiple soil components
+  # Typical of a US soil series classification system
+  
+  data.frame(
+    mukey = c(
+      rep(463168, 3),  # Map Unit 1: Mussey series dominated
+      rep(463171, 2)   # Map Unit 2: related component
+    ),
+    cokey = c(463168.1, 463168.2, 463168.3, 463171.1, 463171.2),
+    comppct = c(60, 25, 15, 70, 30),  # Component percent
+    compname = c("Mussey", "Henline", "Lacreek", "Mussey", "Lacreek"),
+    
+    # Horizon data for shallow (~0-30cm) and deeper (~30-60cm) zones
+    hzdept_r = c(0, 0, 0, 0, 0),
+    hzdepb_r = c(30, 30, 30, 30, 30),
+    
+    # Compositional data (sand, silt, clay percentages)
+    sandtotal = c(35, 25, 15, 40, 20),
+    silttotal = c(50, 60, 65, 45, 70),
+    claytotal = c(15, 15, 20, 15, 10),
+    
+    # Additional metadata
+    hzname = c("Ap", "Bt", "Ck", "Ap", "Bt"),
+    hzdepth_cm = "0-30"
+  )
+}
+
+# Create or fetch data
+ssurgo_data <- create_demo_ssurgo_data()
+
+print("SSURGO Component Data:")
+print(ssurgo_data)
+```
+
+**Real-World Alternative** (requires network & soilDB):
+
+```{r eval=FALSE}
+# Example of actual SDA query (commented out for reproducibility)
+# library(soilDB)
+#
+# # Query SSURGO for specific map unit(s)
+# ssurgo_data <- soilDB::fetchOSD("Mussey")  # Official Series Description
+# # OR for mapped components from SDA:
+# # ssurgo_data <- soilDB::get_SDA_property(...)
+```
+
+# Step 2: Convert SSURGO Data to Simulation Parameters
+
+Transform raw soil component data into constraint bounds and sample statistics
+appropriate for geostatistical simulation.
+
+```{r}
+# Parameterize constraints from SSURGO data
+params <- geocoda::gc_ssurgo_to_params(
+  x = ssurgo_data,
+  weight_method = "comppct",  # Weight by component percent (comppct)
+  depth_range = c(0, 30),      # Surface horizon
+  target_sum = 100,
+  agg_method = "weighted_mean",
+  verbose = TRUE
+)
+
+cat("\n=== Extracted Parameters ===\n")
+cat("\nConstraint Bounds (10th-90th percentiles):\n")
+print(params$constraints)
+
+cat("\nMap Unit Statistics:\n")
+print(params$mu_stats)
+```
+
+# Step 3: Define Valid Compositional Space
+
+Create a grid of valid soil texture compositions that satisfies all constraints.
+This ensures simulated realizations stay within reasonable bounds.
+
+```{r}
+# Expand bounds to create a regular grid of compositional space
+# Constraints serve as min/max bounds for each component
+
+constraints <- params$constraints
+
+cat("\nCreating composition grid with constraints:\n")
+for (comp in names(constraints)) {
+  cat(paste0(
+    "  ", comp, ": [",
+    round(constraints[[comp]]$min, 1), ", ",
+    round(constraints[[comp]]$max, 1), "]\n"
+  ))
+}
+
+# Expand bounds to create valid compositions
+comp_grid <- geocoda::gc_expand_bounds(constraints, n_per_dim = 15)
+
+cat(f"\nComposition grid generated: {nrow(comp_grid)} valid compositions\n")
+print(head(comp_grid))
+```
+
+# Step 4: Bootstrap Composition Samples
+
+Sample representative compositions from the valid grid to initialize
+the geostatistical model.
+
+```{r}
+# Resample compositions (with or without soil texture constraints)
+samples <- geocoda::gc_resample_compositions(
+  constraints,
+  n = 500,
+  method = "soil_texture",  # Texture-aware resampling
+  resample_type = "grid_pert"
+)
+
+cat(f"\nBootstrap samples: {nrow(samples)} realizations\n")
+cat("Sample statistics:\n")
+print(data.frame(
+  Component = colnames(samples),
+  Mean = colMeans(samples, na.rm = TRUE),
+  SD = apply(samples, 2, sd, na.rm = TRUE),
+  Min = colMins(samples, na.rm = TRUE),
+  Max = colMaxs(samples, na.rm = TRUE)
+))
+```
+
+# Step 5: Estimate ILR Parameters
+
+Transform compositional data to Isometric Log-Ratio (ILR) space and estimate
+mean vector and covariance matrix.
+
+```{r}
+# ILR transformation and parameter estimation
+ilr_params <- geocoda::gc_ilr_params(
+  x = samples,
+  components = c("SAND", "SILT", "CLAY"),
+  center = TRUE,
+  scale = FALSE
+)
+
+cat("\nILR Parameter Summary:\n")
+cat("Mean vector (in ILR space):\n")
+print(ilr_params$mean)
+cat("\nCovariance matrix:\n")
+print(ilr_params$covariance)
+```
+
+# Step 6: Fit Variogram to Spatial Structure
+
+Estimate spatial correlation structure using empirical variograms.
+For demonstration, we use synthetic spatial data.
+
+```{r}
+# Create synthetic sampling locations in a domain
+set.seed(42)
+domain <- st_as_sf(
+  data.frame(
+    x = runif(100, 0, 1000),
+    y = runif(100, 0, 1000),
+    sand = rep(samples$SAND[1:10], 10),
+    silt = rep(samples$SILT[1:10], 10),
+    clay = rep(samples$CLAY[1:10], 10)
+  ),
+  coords = c("x", "y"),
+  crs = "EPSG:32618"  # UTM Zone 18N
+)
+
+# Fit variogram
+vgm_fit <- geocoda::gc_fit_vgm(
+  data = domain,
+  components = c("sand", "silt", "clay"),
+  model = "Matern",
+  max_range = 500,
+  verbose = TRUE
+)
+
+cat("\nVariogram Model Summary:\n")
+print(vgm_fit)
+```
+
+# Step 7: Build Geostatistical Model
+
+Combine ILR parameters, covariance, and variogram into a complete
+kriging/simulation model.
+
+```{r}
+# Build linear model of covarionalization (LMC) from variogram
+model <- geocoda::gc_ilr_model(
+  mean = ilr_params$mean,
+  covariance = ilr_params$covariance,
+  vgm = vgm_fit,
+  model_type = "LMC"
+)
+
+cat("\nGeostatistical Model Built:\n")
+print(summary(model))
+```
+
+# Step 8: Generate Stochastic Realizations
+
+Simulate spatially correlated soil texture realizations on a grid.
+
+```{r}
+# Define prediction domain (regular grid)
+prediction_grid <- expand.grid(
+  x = seq(0, 1000, by = 100),
+  y = seq(0, 1000, by = 100)
+)
+
+prediction_sf <- st_as_sf(
+  prediction_grid,
+  coords = c("x", "y"),
+  crs = "EPSG:32618"
+)
+
+# Convert to terra for simulation
+pred_terra <- terra::vect(prediction_sf)
+
+cat(f"\nGenerating 10 conditional simulations on {nrow(prediction_grid)} grid points...\n")
+
+# Generate multiple realizations
+realizations_list <- list()
+for (i in 1:10) {
+  cat("  Realization", i, "...")
+  
+  realization <- geocoda::gc_sim_composition(
+    model = model,
+    newdata = pred_terra,
+    nsim = 1,
+    conditional_data = domain,
+    random_seed = 42 + i
+  )
+  
+  realizations_list[[i]] <- realization
+  cat(" done\n")
+}
+
+# Stack all realizations
+all_realizations <- do.call(c, realizations_list)
+```
+
+# Step 9: Aggregate Ensemble Statistics
+
+Combine multiple realizations to compute ensemble mean, uncertainty, and
+confidence intervals.
+
+```{r}
+# Aggregate realizations: mean, std dev, quantiles
+ensemble_stats <- geocoda::gc_aggregate_realizations(
+  realizations = all_realizations,
+  components = c("SAND", "SILT", "CLAY"),
+  stats = c("mean", "sd", "p05", "p95"),
+  verbose = TRUE
+)
+
+cat("\nEnsemble Summary Layers:\n")
+print(names(ensemble_stats))
+
+# Visualize ensemble mean
+sand_mean <- terra::subset(ensemble_stats, "SAND_mean")
+plot(sand_mean, main = "Ensemble Mean Sand Content (%)")
+```
+
+# Step 10: Validate Realization Quality
+
+Check that simulated compositions satisfy constraints and sum to target.
+
+```{r}
+# Validate realizations against constraints
+validation <- geocoda::gc_validate_realizations(
+  realizations = all_realizations,
+  components = c("SAND", "SILT", "CLAY"),
+  target_sum = 100,
+  sum_tolerance = 1,
+  constraints = params$constraints
+)
+
+cat("\n=== Validation Summary ===\n")
+print(validation$summary)
+
+cat("\nViolation Map Statistics:\n")
+violations <- terra::values(validation$violations_map)[, 1]
+cat("  Cells with no violations:", sum(violations == 0), "\n")
+cat("  Cells with 1+ violations:", sum(violations > 0), "\n")
+cat("  Max violations per cell:", max(violations, na.rm = TRUE), "\n")
+
+# Visualize violations
+plot(validation$violations_map,
+     main = "Realization Constraint Violations (count)",
+     col = c("green", "yellow", "red"))
+```
+
+# Step 11: Visualize Results
+
+Create publication-quality figures showing simulation outcomes.
+
+```{r fig.width=14, fig.height=10}
+# Extract and prepare data for plotting
+sand_stack <- list(
+  mean = terra::subset(ensemble_stats, "SAND_mean"),
+  sd = terra::subset(ensemble_stats, "SAND_sd"),
+  p05 = terra::subset(ensemble_stats, "SAND_p05"),
+  p95 = terra::subset(ensemble_stats, "SAND_p95")
+)
+
+# Create multi-panel visualization
+par(mfrow = c(2, 2))
+
+for (stat in names(sand_stack)) {
+  lab <- switch(stat,
+                mean = "Sand Content Mean (%)",
+                sd = "Sand Content SD (%)",
+                p05 = "Sand Content 5th Percentile (%)",
+                p95 = "Sand Content 95th Percentile (%)")
+  
+  plot(sand_stack[[stat]],
+       main = lab,
+       type = "continuous",
+       col = viridis::viridis(100))
+}
+
+par(mfrow = c(1, 1))
+```
+
+# Step 12: Export Results
+
+Save simulation outputs to files for downstream use.
+
+```{r eval=FALSE}
+# Save raster stacks
+terra::writeRaster(ensemble_stats, "ensemble_statistics.tif", overwrite = TRUE)
+terra::writeRaster(validation$violations_map, "violation_map.tif", overwrite = TRUE)
+
+# Save validation summary to CSV
+write.csv(validation$summary, "validation_summary.csv", row.names = FALSE)
+
+# Save ensemble realizations (10 rasters)
+for (i in 1:length(realizations_list)) {
+  filename <- sprintf("realization_%02d.tif", i)
+  terra::writeRaster(realizations_list[[i]], filename, overwrite = TRUE)
+}
+
+cat("Results exported successfully!\n")
+```
+
+# Summary & Workflow Integration
+
+## Key Steps Recap
+
+1. **Data Source**: SSURGO map unit data (via soilDB + SDA API)
+2. **Parameterization**: Component-based constraint extraction
+3. **Sampling**: Bootstrap valid compositions from constraint space
+4. **ILR Transform**: Work in ratio-transformed space (better statistical properties)
+5. **Variogram Fitting**: Spatial correlation estimation
+6. **Simulation**: Sequential Gaussian Simulation (SGS) in ILR space
+7. **Back-Transform**: Return to original units (%, summing to 100)
+8. **Ensemble Aggregation**: Combine N realizations for uncertainty quantification
+9. **Validation**: Check constraint satisfaction and statistical properties
+10. **Visualization & Export**: Results for map, reports, and downstream analysis
+
+## Advanced Extensions
+
+### Incorporating Covariates (Elevation, Slope, Parent Material)
+
+```{r eval=FALSE}
+# If auxiliary variables are available as rasters:
+covariates_raster <- terra::rast(c("elevation.tif", "slope.tif"))
+
+detrended <- geocoda::gc_apply_covariate_trend(
+  x = domain_as_raster,
+  component_names = c("sand", "silt", "clay"),
+  covariates = covariates_raster,
+  trend_method = "simple"
+)
+
+# Simulate on detrended residuals, then add trend back to predictions
+```
+
+### Depth-Stratified Simulation
+
+```{r eval=FALSE}
+# If multiple depths available in SSURGO:
+surface_params <- geocoda::gc_ssurgo_to_params(
+  x = ssurgo_data,
+  depth_range = c(0, 30)
+)
+
+subsurface_params <- geocoda::gc_ssurgo_to_params(
+  x = ssurgo_data,
+  depth_range = c(30, 60)
+)
+
+# Build separate models per depth and simulate independently
+```
+
+### Multi-Zone Simulation
+
+```{r eval=FALSE}
+# For non-stationary domains (different soil systems by management zone):
+sim_by_zones <- geocoda::gc_simulate_by_zones(
+  sample_data = domain,
+  zones = zones_polygon,
+  constraints = list_of_constraints,
+  nsim = 10
+)
+```
+
+# References
+
+- **SSURGO**: https://www.nrcs.usda.gov/resources/data-and-maps/soil-survey-geographic-ssurgo-database
+- **Soil Data Access API**: https://sdmdataaccess.nrcs.usda.gov/
+- **soilDB Package**: https://github.com/ncss-tech/soilDB
+- **Compositional Data Analysis**: Aitchison, J. (1986). The Statistical Analysis of Compositional Data
+- **Geostatistics**: Goovaerts, P. (1997). Geostatistics for Natural Resource Evaluation
+- **ILR Transform**: Egozcue, J.J., et al. (2003). Isometric Logratio Transformations for Compositional Data Analysis
+
+# Session Info
+
+```{r}
+sessionInfo()
+```

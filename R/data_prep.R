@@ -22,6 +22,10 @@
 #' 3. Cartesian product expansion via `expand.grid()`
 #' 4. Filtering to compositions with sum approximately equal to `target_sum`
 #'
+#' @references
+#' Aitchison, J. (1986). The Statistical Analysis of Compositional Data.
+#' Chapman and Hall, London.
+#'
 #' @examples
 #' # Define sand, silt, clay bounds
 #' constraints <- list(
@@ -264,6 +268,14 @@ gc_resample_compositions <- function(composition_grid,
 #' detection_limits <- c(sand = 1, silt = 1, clay = 1)
 #' result_dl <- gc_handle_zeros(soil_samples, method = "lrem", dl = detection_limits)
 #' }
+#'
+#' @references
+#' Aitchison, J. (1986). The Statistical Analysis of Compositional Data.
+#' Chapman and Hall, London.
+#'
+#' Thió-Henestrosa, S., & Martín-Fernández, J. A. (2003).
+#' Dealing with Compositional Data: The Fcompositions Package.
+#' *Computational Statistics & Data Analysis*, 43, 523-536.
 #'
 #' @importFrom methods is
 #' @export

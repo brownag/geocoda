@@ -1,0 +1,184 @@
+---
+title: "Advanced: Depth-Stratified Mapping"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Advanced: Depth-Stratified}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", eval = FALSE)
+```
+
+## Overview
+
+Depth-stratified mapping: 4 depth intervals (Ap, A1, Bt, C) in 3 zones (upland, hillslope, floodplain) with zone-specific variograms and hierarchical ILR pooling.
+
+---
+
+## Workflow
+
+### Step 1: Load and Stratify Data
+
+```{r load_data}
+library(geocoda)
+library(sf)
+library(compositions)
+
+# Load field observations (25 pits) and SSURGO grid (50 km2)
+field_data <- read.csv("field_soil_pits.csv")
+ssurgo_grid <- sf::read_sf("ssurgo_study_area.shp")
+
+# Define depth intervals
+depth_intervals <- data.frame(
+  interval = c("Ap", "A1", "Bt", "C"),
+  depth_min = c(0, 15, 30, 60),
+  depth_max = c(15, 30, 60, 100)
+)
+zones <- c("Upland", "Hillslope", "Floodplain")
+
+# Normalize compositions and apply zero handling
+field_data$sum_comp <- field_data$sandtotal_r + field_data$silttotal_r + field_data$claytotal_r
+field_data$sandtotal_r <- pmax(field_data$sandtotal_r / field_data$sum_comp * 100, 0.1)
+field_data$silttotal_r <- pmax(field_data$silttotal_r / field_data$sum_comp * 100, 0.1)
+field_data$claytotal_r <- pmax(field_data$claytotal_r / field_data$sum_comp * 100, 0.1)
+
+# Stratify both sources to depth intervals
+field_stratified <- merge(field_data, data.frame(interval = depth_intervals$interval), all = TRUE)
+field_stratified <- merge(field_stratified, depth_intervals, by = "interval", all.x = TRUE)
+field_stratified <- field_stratified[, c("pit_id", "x_utm", "y_utm", "zone", "interval", 
+                                       "sandtotal_r", "silttotal_r", "claytotal_r")]
+names(field_stratified)[2:3] <- c("x", "y")
+
+ssurgo_stratified <- ssurgo_grid
+ssurgo_stratified <- st_drop_geometry(ssurgo_stratified)
+ssurgo_stratified <- merge(ssurgo_stratified, data.frame(interval = depth_intervals$interval), all = TRUE)
+ssurgo_stratified <- merge(ssurgo_stratified, depth_intervals, by = "interval", all.x = TRUE)
+```
+
+### Step 2: Estimate ILR Parameters and Fit Variograms
+
+```{r ilr_vgm}
+# Estimate ILR parameters from field data
+ilr_params <- gc_ilr_params(
+  field_stratified[, c("sandtotal_r", "silttotal_r", "claytotal_r")]
+)
+
+# Transform to ILR space
+ilr_data <- field_stratified
+ilr_data$ilr1 <- ilr_params$ilr1_coef[1] * log(ilr_data$sandtotal_r / ilr_data$claytotal_r)
+ilr_data$ilr2 <- ilr_params$ilr2_coef[1] * log(ilr_data$silttotal_r / ilr_data$claytotal_r)
+
+# Fit zone-specific variograms
+vgm_fitted <- gc_fit_vgm(ilr_params, data = ilr_data)
+```
+
+### Step 3: Build Hierarchical Models
+
+```{r hierarchical_model}
+# Create zone-depth hierarchy with field-SSURGO fusion
+ilr_combined <- rbind(
+  data.frame(ilr_data, source = "field", weight = 1.0),
+  data.frame(
+    x = ssurgo_stratified$x,
+    y = ssurgo_stratified$y,
+    sandtotal_r = ssurgo_stratified$sandtotal_r,
+    silttotal_r = ssurgo_stratified$silttotal_r,
+    claytotal_r = ssurgo_stratified$claytotal_r,
+    zone = ssurgo_stratified$zone,
+    interval = ssurgo_stratified$interval,
+    ilr1 = ilr_params$ilr1_coef[1] * log(ssurgo_stratified$sandtotal_r / ssurgo_stratified$claytotal_r),
+    ilr2 = ilr_params$ilr2_coef[1] * log(ssurgo_stratified$silttotal_r / ssurgo_stratified$claytotal_r),
+    source = "ssurgo",
+    weight = 0.6
+  )
+)
+
+# Fit separate model per zone with hierarchical pooling
+models_by_zone <- list()
+for (z in zones) {
+  zone_data <- ilr_combined[ilr_combined$zone == z, ]
+  models_by_zone[[z]] <- gc_ilr_model(ilr_params, variogram_model = vgm_fitted,
+                                     data = zone_data, shrinkage_strength = 0.4)
+}
+names(models_by_zone) <- zones
+```
+
+### Step 4: Generate Predictions
+
+```{r simulation}
+# Create 500m prediction grid and generate 400 realizations per zone-depth
+pred_grid <- st_make_grid(ssurgo_grid, cellsize = 500, what = "centers") %>%
+  st_as_sf() %>%
+  mutate(zone = assign_zones_spatial(geometry, zones))
+
+# Generate realizations for each zone-depth combination
+realizations <- list()
+for (z in zones) {
+  for (d in depth_intervals$interval) {
+    zone_grid <- pred_grid[pred_grid$zone == z, ] %>% st_drop_geometry()
+    
+    sims <- gc_sim_composition(
+      models_by_zone[[z]], 
+      locations = zone_grid,
+      nsim = 400,
+      target_names = c("sandtotal_r", "silttotal_r", "claytotal_r")
+    )
+    
+    realizations[[paste(z, d, sep = "_")]] <- sims
+  }
+}
+
+# Compute uncertainty statistics
+all_realizations <- do.call(rbind, lapply(realizations, function(x) data.frame(x, zone_depth = names(realizations)[match(x, realizations)])))
+all_realizations$zone <- sapply(strsplit(all_realizations$zone_depth, "_"), `[`, 1)
+all_realizations$interval <- sapply(strsplit(all_realizations$zone_depth, "_"), `[`, 2)
+
+stats <- aggregate(cbind(sandtotal_r, silttotal_r, claytotal_r) ~ zone + interval + location_id, 
+                  data = all_realizations, FUN = function(x) c(mean = mean(x), sd = sd(x)))
+```
+
+### Step 5: Validation and Export
+
+```{r validation}
+# Cross-validation: leave-one-out CV per zone
+cv_results <- list()
+for (z in zones) {
+  zone_data <- ilr_data[ilr_data$zone == z, ]
+  cv_results[[z]] <- gc_cross_validate(models_by_zone[[z]], zone_data)
+}
+cv_results <- do.call(rbind, cv_results)
+cv_results$zone <- rep(zones, each = nrow(cv_results) / length(zones))
+
+cv_summary <- aggregate(cbind(residual, in_95pi) ~ zone, data = cv_results, 
+                       FUN = function(x) c(rmse = sqrt(mean(x^2)), coverage = mean(x)))
+cv_summary <- data.frame(zone = cv_summary$zone, 
+                        rmse = cv_summary$residual[, "rmse"],
+                        coverage = cv_summary$in_95pi[, "coverage"],
+                        n = table(cv_results$zone))
+
+# Export predictions to rasters and CSV
+write.csv(stats, "depth_stratified_predictions.csv", row.names = FALSE)
+```
+
+## Key Points
+
+[OK] Transform soil profiles to depth intervals (Ap/A1/Bt/C) before pooling across zones
+
+[OK] Estimate zone-specific variograms separately before hierarchical model fitting
+
+[OK] Combine field + SSURGO with appropriate weights (field = 1.0, SSURGO = 0.6)
+
+[OK] Cross-validate predictions within each zone to ensure zone-specific model quality
+
+[OK] Extract uncertainty maps (entropy) from ensemble realizations for decision-making
+
+## References
+
+- `gc_ilr_params()` - Estimate ILR transformation parameters
+- `gc_fit_vgm()` - Fit zone-specific variogram models
+- `gc_ilr_model()` - Build hierarchical model with pooling
+- `gc_sim_composition()` - Generate probabilistic realizations
+- `gc_cross_validate()` - Leave-one-out cross-validation
+- `gc_compute_entropy()` - Uncertainty quantification

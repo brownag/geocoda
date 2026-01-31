@@ -1,0 +1,159 @@
+---
+title: "Advanced: Multi-Zone Hierarchical"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Advanced: Multi-Zone}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", eval = FALSE)
+```
+
+## Overview
+
+Hierarchical mapping across 8 zones in 3 regions. Borrows strength from data-rich zones (8 pits) to sparse zones (1 pit) using ILR-level shrinkage estimation.
+
+---
+
+## Workflow
+
+### Step 1: Define Hierarchy and Load Data
+
+```{r setup_data}
+library(geocoda)
+library(sf)
+
+# Define 8-zone hierarchy nested in 3 regions
+zones_hierarchy <- data.frame(
+  zone_id = paste0("Z", 1:8),
+  zone_name = c(
+    "Glaciated_Upland", "Glaciated_Slope", "Glaciated_Depression",
+    "Dissected_Hillslope", "Dissected_Footslope",
+    "Alluvial_HighTerrace", "Alluvial_Floodplain_High", "Alluvial_Floodplain_Low"
+  ),
+  region = c(rep("Glaciated", 3), rep("Dissected", 2), rep("Alluvial", 3)),
+  n_pits = c(8, 3, 1, 5, 2, 7, 4, 2)
+)
+
+# Load field data (128 samples across 8 zones)
+field_all <- read.csv("field_observations_by_zone.csv")
+
+# Load and assign SSURGO by zone
+ssurgo_agg <- gc_fetch_sda_properties(
+  extent = st_bbox(field_all %>% st_as_sf(coords = c("x", "y"))),
+  depth_range = c(0, 30)
+) %>%
+  gc_process_ssurgo_components(
+    component_cols = c("sandtotal_r", "silttotal_r", "claytotal_r")
+  )
+
+# Combine field + SSURGO with hierarchy
+field_ilr <- field_all
+field_ilr$source <- "field"
+field_ilr$weight <- 1.0
+
+ssurgo_ilr <- ssurgo_agg$compositions
+ssurgo_ilr <- merge(ssurgo_ilr, data.frame(zone_id = unique(zones_hierarchy$zone_id)), all = TRUE)
+ssurgo_ilr <- aggregate(cbind(sandtotal_r, silttotal_r, claytotal_r) ~ zone_id, 
+                       data = ssurgo_ilr, FUN = mean)
+ssurgo_ilr$source <- "ssurgo"
+ssurgo_ilr$weight <- 0.6
+
+ilr_combined <- rbind(field_ilr, ssurgo_ilr)
+ilr_combined <- merge(ilr_combined, zones_hierarchy, by = "zone_id", all.x = TRUE)
+```
+
+### Step 2: Fit Hierarchical Models with Partial Pooling
+
+```{r hierarchical_models}
+# Estimate ILR parameters globally
+ilr_params <- gc_ilr_params(
+  field_all[, c("sandtotal_r", "silttotal_r", "claytotal_r")]
+)
+
+# Fit global + regional + zone-specific models (3-level hierarchy)
+# Level 1: Global mean
+global_mean <- gc_ilr_params(ilr_combined[, c("sandtotal_r", "silttotal_r", "claytotal_r")])
+
+# Level 2: Regional shrinkage (zones borrow from region mean)
+regional_estimates <- aggregate(cbind(sandtotal_r, silttotal_r, claytotal_r) ~ region, 
+                               data = ilr_combined, FUN = mean)
+names(regional_estimates) <- c("region", "sand_mean", "silt_mean", "clay_mean")
+
+# Level 3: Zone-specific models with shrinkage toward regional mean
+models_by_zone <- list()
+for (z in unique(zones_hierarchy$zone_id)) {
+  zone_data <- ilr_combined[ilr_combined$zone_id == z, ]
+  zone_region <- zones_hierarchy$region[zones_hierarchy$zone_id == z]
+  
+  # Shrinkage factor: stronger for data-sparse zones
+  n_obs <- sum(zone_data$source == "field")
+  shrinkage <- max(0.3, 1 - (n_obs / 10))  # More shrink if n < 10
+  
+  model <- gc_ilr_model(
+    ilr_params,
+    data = zone_data,
+    shrinkage_strength = shrinkage,
+    prior_mean = regional_estimates[regional_estimates$region == zone_region, 
+                                   c("sand_mean", "silt_mean", "clay_mean")]
+  )
+  models_by_zone[[z]] <- model
+}
+```
+
+### Step 3: Generate Multi-Zone Predictions
+
+```{r predictions}
+# Create prediction grid (1km cells)
+study_extent <- st_bbox(field_all %>% st_as_sf(coords = c("x", "y")))
+pred_grid <- st_make_grid(
+  st_as_sfc(study_extent), cellsize = 1000, what = "centers"
+) %>%
+  st_as_sf() %>%
+  mutate(zone_id = assign_zones_spatial(geometry, zones_hierarchy))
+
+# Generate 300 realizations per zone
+realizations <- list()
+for (z in unique(zones_hierarchy$zone_id)) {
+  zone_grid <- pred_grid[pred_grid$zone_id == z, ] %>% st_drop_geometry()
+  
+  sims <- gc_sim_composition(
+    models_by_zone[[z]],
+    locations = zone_grid,
+    nsim = 300,
+    target_names = c("sandtotal_r", "silttotal_r", "claytotal_r")
+  )
+  
+  sims$zone_id <- z
+  realizations[[z]] <- sims
+}
+
+# Compute uncertainty statistics
+all_realizations <- do.call(rbind, realizations)
+stats <- aggregate(cbind(sandtotal_r, silttotal_r, claytotal_r) ~ zone_id + location_id, 
+                  data = all_realizations, FUN = function(x) c(mean = mean(x), sd = sd(x)))
+stats <- merge(stats, zones_hierarchy, by = "zone_id", all.x = TRUE)
+```
+
+## Key Points
+
+[OK] Define hierarchy explicitly: Global mean -> Region shrinkage -> Zone-specific model
+
+[OK] Zones with <5 samples benefit most from hierarchical pooling (shrinkage_strength = 0.5-0.6)
+
+[OK] Cross-validate at zone level to assess impact of borrowing strength across hierarchy
+
+[OK] Compare data-rich zones (8 pits) vs data-sparse (1 pit) - shrinkage effect documented
+
+[OK] Export predictions with uncertainty at both zone and regional scales for decision-making
+
+## References
+
+- `gc_ilr_params()` - Estimate ILR transformation parameters
+- `gc_fit_vgm()` - Fit variogram models at regional level
+- `gc_ilr_model()` - Build hierarchical model with shrinkage
+- `gc_sim_composition()` - Generate zone-specific realizations
+- `gc_cross_validate()` - Zone-grouped cross-validation
+- `gc_compute_entropy()` - Uncertainty quantification in composition space

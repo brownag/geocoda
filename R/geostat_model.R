@@ -23,6 +23,14 @@
 #' The ILR transformation eliminates the sum constraint, allowing standard
 #' multivariate geostatistics to be applied.
 #'
+#' @references
+#' Egozcue, J. J., Pawlowsky-Glahn, V., Mateu-Figueras, G., & Barceló-Vidal, C. (2003).
+#' Isometric Log-Ratio Transformations for Compositional Data Analysis.
+#' *Mathematical Geology*, 35(3), 279-300. https://doi.org/10.1023/A:1023818214614
+#'
+#' Aitchison, J. (1986). The Statistical Analysis of Compositional Data.
+#' Chapman and Hall, London.
+#'
 #' @examples
 #' # Simulate some simple compositions
 #' samples <- data.frame(
@@ -31,7 +39,7 @@
 #'   clay = c(20, 20, 20, 20)
 #' )
 #'
-#' params <- estimate_ilr_params(samples)
+#' params <- gc_ilr_params(samples)
 #' str(params)
 #' print(params$mean)
 #' print(params$cov)
@@ -92,6 +100,26 @@ gc_ilr_params <- function(samples) {
 #'
 #' For conditional simulation, the conditioning data must be passed to this function
 #' (not to `predict()`). The model then automatically uses that data during prediction.
+#'
+#' @references
+#' Wackernagel, H. (2003). Multivariate Geostatistics: An Introduction with Applications (3rd ed.).
+#' Springer-Verlag, Berlin.
+#'
+#' Chilès, J. P., & Delfiner, P. (2012). Geostatistics: Modeling Spatial Uncertainty (2nd ed.).
+#' Wiley, Hoboken, NJ.
+#'
+#' Tolosana-Delgado, R., Mueller, U., & van den Boogaart, K. G. (2012).
+#' Geostatistics for Compositional Data: An Overview.
+#' *Mathematical Geosciences*, 44(4), 465-479. https://doi.org/10.1007/s11004-011-9363-4
+#'
+#' @examples
+#' \dontrun{
+#' ilr_prm <- gc_ilr_params(compositions::acomp(data.frame(
+#'   sand = c(50, 60, 45), silt = c(30, 25, 35), clay = c(20, 15, 20)
+#' )))
+#' vgm <- gstat::vgm(psill = 0.5, model = "Exp", range = 50, nugget = 0.1)
+#' model <- gc_ilr_model(ilr_prm, vgm, model_type = "univariate")
+#' }
 #'
 #' @importFrom gstat gstat
 #' @export

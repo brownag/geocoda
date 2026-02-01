@@ -1,0 +1,334 @@
+---
+title: "Complete Soil Texture Mapping Workflow"
+author: "Andrew G. Brown"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_vignette:
+    number_sections: true
+vignette: >
+  %\VignetteIndexEntry{Complete Soil Texture Mapping Workflow}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 8,
+  fig.height = 6,
+  dpi = 100
+)
+```
+
+# Overview
+
+This vignette demonstrates a complete workflow for spatially simulating soil texture separates (Sand, Silt, Clay) using the **geocoda** package, from data preparation through decision support.
+
+Soil texture is a **compositional variable**: its components must sum to exactly 100%. This sum constraint violates standard statistical assumptions, making conventional multivariate geostatistics inappropriate. The **Isometric Log-Ratio (ILR) transformation** removes this constraint, allowing standard geostatistics in transformed space. Back-transformation guarantees that all realizations sum to 100% and remain non-negative.
+
+The complete workflow follows these steps:
+
+1. **Data Preparation** - Define constraints, generate valid compositions, prepare spatial data
+2. **Transform to ILR Space** - Estimate covariance structure, handle special cases
+3. **Geostatistical Modeling** - Fit variograms, build kriging model
+4. **Spatial Simulation** - Generate multiple realizations with spatial correlation
+5. **Risk Assessment & Decision Support** - Quantify uncertainty, make decisions under uncertainty
+
+This framework is generic and applicable to any $D$-part composition (geochemistry, vegetation, mineralogy, etc.). For specialized techniques like hierarchical multi-zone modeling or SSURGO integration, see vignettes 04 and 06.
+
+# Data Preparation and Initial Analysis
+
+## Setup and Load Packages
+
+```{r, message=FALSE}
+library(geocoda)
+library(gstat)
+library(sf)
+library(terra)
+library(compositions)
+
+set.seed(42)
+```
+
+## Define Composition Constraints
+
+Start by defining realistic bounds for soil texture components:
+
+```{r}
+constraints <- list(
+  SAND = list(min = 0, max = 40),
+  SILT = list(min = 50, max = 80),
+  CLAY = list(min = 10, max = 20)
+)
+
+# Example: typical silt loam bounds
+# Sand and clay restricted to narrow ranges, silt fills remainder to sum to 100%
+```
+
+## Generate Valid Composition Grid
+
+Expand constraints into a grid of all physically valid combinations that sum to 100%:
+
+```{r}
+grid <- gc_expand_bounds(constraints, step = 1.0, target_sum = 100)
+head(grid)
+
+# Verify all rows sum to 100%
+all(abs(rowSums(grid) - 100) < 1e-6)
+```
+
+## Bootstrap Samples from Valid Compositions
+
+Sample from the valid grid to create a representative population:
+
+```{r}
+samples <- gc_resample_compositions(
+  grid,
+  n = 1000,
+  method = "uniform"
+)
+
+# Summary statistics
+data.frame(
+  Component = c("SAND", "SILT", "CLAY"),
+  Mean = colMeans(samples$samples),
+  StdDev = apply(samples$samples, 2, sd),
+  Min = apply(samples$samples, 2, min),
+  Max = apply(samples$samples, 2, max)
+)
+```
+
+## Estimate ILR Parameters
+
+Transform samples to ILR space and estimate parameters:
+
+```{r}
+params <- gc_ilr_params(samples$samples)
+
+# Mean vector in ILR space
+params$mean
+
+# Covariance matrix
+params$cov
+```
+
+# Geostatistical Modeling
+
+## Variogram: Quantifying Spatial Correlation
+
+The **variogram** measures how similarity changes with distance:
+
+$$\gamma(h) = \frac{1}{2} E[Z(x) - Z(x+h)]^2$$
+
+Key properties:
+
+- At $h=0$: $\gamma(0) = 0$ (perfect correlation with itself)
+- Small distances: $\gamma(h)$ small (high correlation)
+- Large distances: $\gamma(h) \to \text{sill}$ (independence)
+- **Nugget**: Discontinuity at $h=0$ (measurement error + local variation)
+- **Range**: Distance where sill is reached (correlation range)
+
+Set variogram parameters using default suggestions:
+
+```{r}
+extent <- c(0, 0, 100, 100)
+suggestions <- gc_vgm_defaults(params, extent)
+
+# Create variogram model
+vgm_model <- gstat::vgm(
+  psill = 1,
+  model = "Exp",
+  range = suggestions$range * 0.35,
+  nugget = 0.01
+)
+vgm_model
+```
+
+## Build Geostatistical Model
+
+Combine ILR covariance with spatial variogram:
+
+```{r}
+model <- gc_ilr_model(params, variogram_model = vgm_model)
+```
+
+By default, `gc_ilr_model()` uses **Independent Univariate Kriging** (one model per ILR dimension). This is numerically stable and standard. For advanced multivariate modeling, see the parameter reference vignette (Vignette 07).
+
+# Spatial Simulation
+
+## Define Simulation Grid
+
+Create a regular grid for simulation:
+
+```{r}
+x_range <- seq(0, 100, by = 4)
+y_range <- seq(0, 100, by = 4)
+grid_df <- expand.grid(x = x_range, y = y_range)
+grid_sf <- sf::st_as_sf(grid_df, coords = c("x", "y"))
+
+nrow(grid_sf)  # 676 prediction points
+```
+
+## Generate Multiple Realizations
+
+Simulate 10 equally-probable realizations for uncertainty quantification:
+
+```{r}
+sims <- gc_sim_composition(
+  model,
+  grid_sf,
+  nsim = 10,
+  target_names = c("SAND", "SILT", "CLAY")
+)
+
+names(sims)
+```
+
+## Validation
+
+Verify constraints are satisfied:
+
+```{r}
+# Extract values
+vals <- as.data.frame(terra::values(sims))
+
+# Check sum constraint (should all be ~100)
+for (i in 1:3) {
+  sand <- vals[[paste0("SAND.sim", i)]]
+  silt <- vals[[paste0("SILT.sim", i)]]
+  clay <- vals[[paste0("CLAY.sim", i)]]
+  total <- sand + silt + clay
+
+  cat("Realization", i, "- Sum range:",
+      round(min(total), 2), "to", round(max(total), 2), "\n")
+}
+
+# Check non-negativity
+cat("Value range:", round(min(as.matrix(vals)), 2),
+    "to", round(max(as.matrix(vals)), 2), "\n")
+```
+
+# Risk Assessment & Decision Support
+
+Now that we have multiple realizations, we can quantify uncertainty and make decisions. **Phase 1 of geocoda** adds specialized risk assessment functions.
+
+## Probability Mapping
+
+Calculate the probability that each location exceeds a threshold (e.g., sand > 50%):
+
+```{r, eval=FALSE}
+# Extract just the SAND layers
+sand_sims <- sims[[grep("^SAND\\.sim", names(sims))]]
+
+# Calculate probability P(SAND > 50%)
+prob_sand_50 <- gc_probability_map(sand_sims, threshold = 50, operator = ">")
+
+# Visualize probability
+terra::plot(prob_sand_50, main = "P(SAND > 50%)", col = viridis::viridis(20))
+```
+
+**Interpretation:**
+- Red (P ≈ 0): Very unlikely to exceed threshold
+- Blue (P ≈ 1): Very likely to exceed threshold
+- Purple (P ≈ 0.5): Maximum uncertainty
+
+## Percentile Mapping
+
+Compute uncertainty bands (P10, P50, P90):
+
+```{r, eval=FALSE}
+# Get percentiles across all realizations at each location
+percentiles <- gc_percentile_map(
+  sand_sims,
+  percentiles = c(0.1, 0.5, 0.9)
+)
+
+# Visualize: median + uncertainty bands
+plot(percentiles, main = c(
+  "P10 (Conservative)",
+  "P50 (Median)",
+  "P90 (Optimistic)"
+))
+
+# Width of P10-P90 band indicates uncertainty
+width <- percentiles[[3]] - percentiles[[1]]
+terra::plot(width, main = "Uncertainty Band Width (P90-P10)")
+```
+
+## Risk Assessment with Loss Functions
+
+Use asymmetric cost functions for decision-making. Example: **Carbon credit
+verification** where over-crediting (false positive) costs more than
+under-crediting (false negative):
+
+```{r, eval=FALSE}
+# Carbon credit assessment: Is SOC likely >= 50 Mg/ha?
+# Cost parameters:
+#   a = 2.0: Cost of crediting undeserving location (financial risk)
+#   b = 1.0: Cost of not crediting deserving location (opportunity cost)
+
+loss_result <- gc_risk_assessment(
+  simulations = sand_sims,
+  threshold = 50,
+  loss_function = "asymmetric",
+  cost_params = list(a = 2.0, b = 1.0),
+  operator = ">="
+)
+
+# Expected loss map shows economic risk at each location
+terra::plot(loss_result$expected_loss,
+            main = "Expected Loss (Economic Risk)")
+
+# Decision map: approve or deny
+terra::plot(loss_result$decision,
+            main = "Decision (1=Approve, 0=Deny)")
+```
+
+**Decision Logic:**
+- Locations where expected loss is minimized are approved
+- Asymmetric costs shift the decision threshold (not 50%)
+- Users can adjust costs to reflect their risk tolerance
+
+## Complete Carbon Audit Workflow
+
+For carbon credit programs, use the integrated audit function:
+
+```{r, eval=FALSE}
+# 90% confidence audit: issue credits only if P10
+# (conservative estimate) exceeds threshold
+audit <- gc_carbon_audit(
+  simulations = sand_sims,
+  credit_threshold = 50,
+  confidence = 0.9,
+  audit_type = "conservative"
+)
+
+# Audit report with summary statistics
+cat(audit$audit_report)
+```
+
+# Summary
+
+The complete workflow demonstrates:
+
+1. ✓ **Data preparation**: Compositional constraints → valid sampling
+2. ✓ **Transformation**: Compositional → ILR (unconstrained) space
+3. ✓ **Spatial modeling**: Variograms capture spatial correlation
+4. ✓ **Uncertainty**: Multiple realizations quantify spatial uncertainty
+5. ✓ **Decision support**: Probability, percentiles, and loss functions enable informed decisions
+
+**Next Steps:**
+
+- **Multi-zone hierarchical modeling**: Use `gc_fit_hierarchical_model()` for region-specific estimates (Vignette 04)
+- **SSURGO integration**: Combine live queries with field data (Vignette 06)
+- **Advanced data preparation**: Gap filling, edge handling, multi-source integration (Vignette 02)
+- **Deep dives**: Parameter selection guide (Vignette 07), FAQ (Vignette 08)
+
+The geocoda framework is flexible and applicable to any compositional data. For generalization beyond soil texture, see the parameter selection guide.
+
+# References
+
+- Aitchison, J. (1986). *The Statistical Analysis of Compositional Data*. Chapman and Hall, London.
+- Egozcue et al. (2003). Isometric Log-Ratio Transformations for Compositional Data Analysis. *Mathematical Geology*, 35(3), 279–300.
+- Chilès, J. P., & Delfiner, P. (2012). *Geostatistics: Modeling Spatial Uncertainty*. Wiley, Hoboken, NJ.

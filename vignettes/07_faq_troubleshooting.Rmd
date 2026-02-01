@@ -1,0 +1,156 @@
+---
+title: "FAQ & Troubleshooting"
+author: "Andrew G. Brown"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_vignette:
+    number_sections: true
+vignette: >
+  %\VignetteIndexEntry{FAQ & Troubleshooting}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 8,
+  fig.height = 6,
+  dpi = 100
+)
+```
+
+# Overview
+
+Frequently asked questions and solutions for common issues when using geocoda for compositional soil mapping.
+
+## Vignette Status
+
+**Minimal scaffold** - Will be expanded with:
+- Common error messages and solutions
+- Parameter tuning guidelines
+- Performance optimization tips
+- Data preparation troubleshooting
+- Simulation validation checks
+- Backend-specific issues (analytical/Stan/Nimble)
+
+## Quick Reference: Common Issues
+
+### Data Preparation
+
+**Q: "Compositional sum not equal to 100%"**
+- COMING: Troubleshooting guide for data quality checks
+
+**Q: "Too many zeros in my data"**
+- COMING: Zero handling strategies and imputation guidance
+
+**Q: "Warnings about sparse data"**
+- COMING: Bootstrap resampling and edge extension techniques
+
+### Variogram Modeling
+
+**Q: "Variogram fitting failed"**
+- COMING: Variogram fitting diagnostics and debugging
+
+**Q: "Which range parameter should I use?"**
+- See Vignette 06: Parameter Selection Guide
+
+### Simulation & Constraints
+
+**Q: "Simulations violate compositional constraints"**
+- COMING: Constraint validation and enforcement troubleshooting
+
+**Q: "Predictions look unrealistic"**
+- COMING: Validation checklist and sensitivity analysis
+
+### Hierarchical Models
+
+**Q: "Which backend should I use?"**
+- See Vignette 03: Hierarchical Modeling for backend comparison
+
+**Q: "Shrinkage weights don't look right"**
+- COMING: Interpreting and tuning shrinkage parameters
+
+**Q: "MCMC chains not converging"**
+- COMING: Stan/Nimble convergence diagnostics and debugging
+
+### Risk Assessment
+
+**Q: "How do I interpret probability maps?"**
+- See Vignette 02: Ensemble Analysis & Risk Assessment
+
+**Q: "What loss function should I use?"**
+- COMING: Loss function selection for different scenarios
+
+## Common Error Messages
+
+```{r error_messages, eval=FALSE}
+# COMING: Comprehensive error troubleshooting guide
+
+# Error 1: "object ... not found"
+# Solution: ...
+
+# Error 2: "Invalid CRS"
+# Solution: ...
+
+# Error 3: "Dimension mismatch"
+# Solution: ...
+```
+
+## Performance Optimization
+
+```{r performance_tips, eval=FALSE}
+# COMING: Performance optimization guidelines
+
+# Tip 1: Reduce grid resolution for exploratory analysis
+# Tip 2: Use analytical backend for initial fitting
+# Tip 3: Parallelize multiple realizations
+# Tip 4: Cache variogram fits
+```
+
+## Validation Workflows
+
+```{r validation_checklist, eval=FALSE}
+# COMING: Pre-simulation and post-simulation validation checklists
+
+# Pre-simulation checks:
+# - Compositional constraint satisfaction
+# - Spatial coverage adequacy
+# - Outlier detection
+# - Stationarity assessment
+
+# Post-simulation checks:
+# - Constraint satisfaction in realizations
+# - Statistical reproduction (mean, variance, spatial structure)
+# - Visual plausibility assessment
+# - Comparison with input observations
+```
+
+## When to Contact Maintainers
+
+- Unexpected computational errors
+- Suspected bugs in constraint enforcement
+- Feature requests aligned with roadmap
+- Documentation unclear on specific topics
+
+# Integration with Other Vignettes
+
+- See **Vignette 00** for complete workflow overview
+- See **Vignette 01** for data preparation guidance
+- See **Vignette 02** for risk assessment concepts
+- See **Vignette 03** for hierarchical model backends
+- See **Vignette 06** for parameter selection
+
+# References
+
+GitHub Issues: https://github.com/brownag/geocoda/issues
+Package Documentation: https://brownag.github.io/geocoda
+
+---
+
+**This FAQ will be expanded with:**
+- Detailed error troubleshooting
+- Performance optimization strategies
+- Workflow best practices
+- Real-world solutions to common problems

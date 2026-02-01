@@ -1,0 +1,408 @@
+---
+title: "Hierarchical Modeling: Multi-Zone Analysis"
+author: "Andrew G. Brown"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_vignette:
+    number_sections: true
+vignette: >
+  %\VignetteIndexEntry{Hierarchical Modeling}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 8,
+  fig.height = 6,
+  dpi = 100
+)
+```
+
+# Overview
+
+Many soil surveys span multiple distinct regions (zones) with different compositional properties. **Hierarchical modeling** estimates zone-specific parameters while **borrowing strength** from global estimates to stabilize predictions in data-sparse zones.
+
+This vignette covers:
+
+1. **Hierarchical structure** - Global, zone, and local levels
+2. **Shrinkage estimation** - Optimal pooling between zones
+3. **Three computational backends** - Analytical (fast), Stan (full Bayesian), Nimble (MCMC)
+4. **Zone-based simulation** - Spatial structure within and between zones
+5. **When to use each backend** - Decision framework
+
+# Setup
+
+```{r, message=FALSE}
+library(geocoda)
+library(terra)
+library(sf)
+
+set.seed(42)
+```
+
+# Multi-Zone Data Structure
+
+## Define Zones with Varying Properties
+
+```{r zones_setup}
+# Create three zones with distinct compositional properties
+zone_upland <- data.frame(
+  zone = "Upland",
+  x = c(10, 20, 30, 15, 25),
+  y = c(10, 20, 30, 25, 15),
+  SAND = c(70, 75, 68, 72, 69),
+  SILT = c(20, 15, 25, 18, 22),
+  CLAY = c(10, 10, 7, 10, 9)
+)
+
+zone_midslope <- data.frame(
+  zone = "Midslope",
+  x = c(50, 60, 70, 55, 65),
+  y = c(50, 60, 70, 65, 55),
+  SAND = c(45, 48, 50, 46, 49),
+  SILT = c(35, 35, 32, 36, 34),
+  CLAY = c(20, 17, 18, 18, 17)
+)
+
+zone_lowland <- data.frame(
+  zone = "Lowland",
+  x = c(80, 90, 95, 85, 92),
+  y = c(80, 90, 95, 85, 92),
+  SAND = c(30, 25, 28, 32, 26),
+  SILT = c(35, 40, 38, 36, 39),
+  CLAY = c(35, 35, 34, 32, 35)
+)
+
+all_zones <- rbind(zone_upland, zone_midslope, zone_lowland)
+
+# Examine zone-specific statistics
+cat("Upland - Mean sand:", mean(zone_upland$SAND), "%\n")
+cat("Midslope - Mean sand:", mean(zone_midslope$SAND), "%\n")
+cat("Lowland - Mean sand:", mean(zone_lowland$SAND), "%\n")
+```
+
+## ILR Transformation per Zone
+
+```{r zone_ilr}
+# Estimate ILR parameters globally and per-zone
+global_ilr <- gc_ilr_params(all_zones[, c("SAND", "SILT", "CLAY")])
+
+zone_ilr <- list()
+for (zname in unique(all_zones$zone)) {
+  zone_data <- all_zones[all_zones$zone == zname, ]
+  zone_ilr[[zname]] <- gc_ilr_params(zone_data[, c("SAND", "SILT", "CLAY")])
+}
+
+cat("Global ILR mean:\n")
+print(global_ilr$mean)
+
+cat("\nZone-specific means:\n")
+for (zname in names(zone_ilr)) {
+  cat(zname, ":", zone_ilr[[zname]]$mean, "\n")
+}
+```
+
+# Hierarchical Pooling
+
+## The Shrinkage Principle
+
+Zones with few samples have **high estimation variance**. Hierarchical modeling **pools** zone-specific and global estimates, weighted by sample size:
+
+```{r shrinkage_concept}
+# Shrinkage formula: theta_zone = w * theta_zone + (1-w) * theta_global
+# where w = sample size / (sample size + shrinkage_strength)
+
+shrinkage_strength <- 0.5  # Tuning parameter (higher = more pooling)
+
+for (zname in unique(all_zones$zone)) {
+  zone_data <- all_zones[all_zones$zone == zname, ]
+  n_samples <- nrow(zone_data)
+
+  # Shrinkage weight
+  w <- n_samples / (n_samples + shrinkage_strength)
+
+  # Shrunk estimate (for first ILR dimension)
+  theta_zone <- zone_ilr[[zname]]$mean[1]
+  theta_global <- global_ilr$mean[1]
+  theta_shrink <- w * theta_zone + (1 - w) * theta_global
+
+  cat(zname, "- n=", n_samples, ", weight w=", round(w, 2), "\n")
+  cat("  Zone estimate:", round(theta_zone, 3), "\n")
+  cat("  Shrunk estimate:", round(theta_shrink, 3), "\n")
+  cat("  Change:", round(100 * (theta_shrink - theta_zone) / theta_zone, 1),
+      "%\n")
+}
+```
+
+**Key insight**: Data-poor zones (n=5) receive more pooling (w≈0.91) toward global estimate, while all zones benefit from global information.
+
+# Building Hierarchical Models
+
+## Define Zone Hierarchy
+
+```{r zone_hierarchy}
+# Define hierarchical relationship: Global > Zones > Samples
+hierarchy <- gc_define_hierarchy(
+  zone_names = unique(all_zones$zone),
+  component_names = c("SAND", "SILT", "CLAY")
+)
+
+# Set prior specification with pooling
+priors <- gc_set_hierarchy_priors(
+  hierarchy,
+  pooling = "moderate",     # Fixed pooling strength
+  shrinkage_strength = 0.5  # How much to pool toward global
+)
+```
+
+## Three Backend Options
+
+### Backend 1: Analytical (Default)
+
+Fast, deterministic shrinkage estimation:
+
+```{r backend_analytical, eval=FALSE}
+# Analytical backend (no MCMC, produces point estimates + uncertainty intervals)
+fit_analytical <- gc_fit_hierarchical_model(
+  data = all_zones[, c("SAND", "SILT", "CLAY")],
+  zone_assignment = all_zones$zone,
+  priors = priors,
+  backend = "analytical"  # DEFAULT
+)
+
+# Returns: zone means, SDs, shrinkage weights
+```
+
+**When to use**: Fast initial exploration, most users' first choice.
+
+### Backend 2: Stan HMC (Full Bayesian)
+
+Hamiltonian Monte Carlo with real convergence diagnostics:
+
+```{r backend_stan, eval=FALSE}
+# Stan HMC backend (full posterior inference with diagnostics)
+fit_stan <- gc_fit_hierarchical_model(
+  data = all_zones[, c("SAND", "SILT", "CLAY")],
+  zone_assignment = all_zones$zone,
+  priors = priors,
+  backend = "stan",
+  n_iter = 2000,
+  n_warmup = 500,
+  n_chains = 2,
+  estimate_pooling = FALSE  # Use prior, don't estimate
+)
+
+# Returns: posterior samples, Rhat diagnostics, ESS
+```
+
+**When to use**: Need full posterior distribution, want real convergence diagnostics (Rhat < 1.1).
+
+### Backend 3: Nimble MCMC (Flexible)
+
+Adaptive MCMC with efficient sampling:
+
+```{r backend_nimble, eval=FALSE}
+# Nimble backend (flexible MCMC with auto-configured samplers)
+fit_nimble <- gc_fit_hierarchical_model(
+  data = all_zones[, c("SAND", "SILT", "CLAY")],
+  zone_assignment = all_zones$zone,
+  priors = priors,
+  backend = "nimble",
+  n_iter = 2000,
+  n_warmup = 500,
+  n_chains = 2
+)
+
+# Returns: posterior samples, Gelman-Rubin diagnostics
+```
+
+**When to use**: Complex models, want maximum flexibility in MCMC configuration.
+
+# Backend Comparison
+
+```{r backend_comparison_table}
+comparison <- data.frame(
+  Feature = c(
+    "Speed",
+    "Setup complexity",
+    "Convergence diagnostics",
+    "Posterior samples",
+    "Parallelization",
+    "Best for"
+  ),
+  Analytical = c(
+    "Very fast (seconds)",
+    "Minimal",
+    "Fixed Rhat ≈ 1.0",
+    "None",
+    "N/A",
+    "Initial exploration"
+  ),
+  Stan = c(
+    "Slow (minutes)",
+    "Medium",
+    "Real Rhat, ESS",
+    "Yes",
+    "Within chains",
+    "Production inference"
+  ),
+  Nimble = c(
+    "Medium (fast MCMC)",
+    "High",
+    "Gelman-Rubin",
+    "Yes",
+    "Across chains",
+    "Complex models"
+  )
+)
+
+print(comparison)
+
+cat("\nRecommendation: START with Analytical, switch to Stan if needed\n")
+```
+
+# Zone-Based Simulation
+
+## Simulate with Zone Information
+
+```{r zone_simulation}
+# Create prediction grid within each zone
+upland_grid <- expand.grid(
+  x = seq(0, 40, by = 5),
+  y = seq(0, 40, by = 5),
+  zone = "Upland"
+)
+
+midslope_grid <- expand.grid(
+  x = seq(40, 80, by = 5),
+  y = seq(40, 80, by = 5),
+  zone = "Midslope"
+)
+
+lowland_grid <- expand.grid(
+  x = seq(80, 100, by = 5),
+  y = seq(80, 100, by = 5),
+  zone = "Lowland"
+)
+
+pred_grid <- rbind(upland_grid, midslope_grid, lowland_grid)
+pred_grid_sf <- st_as_sf(
+  pred_grid,
+  coords = c("x", "y")
+)
+
+cat("Prediction grid:", nrow(pred_grid), "points across 3 zones\n")
+```
+
+```{r zone_sim_workflow, eval=FALSE}
+# For each zone independently:
+# 1. Fit zone-specific model
+# 2. Simulate zone realizations
+# 3. Combine results
+
+sims_upland <- gc_sim_composition(
+  model = model_upland,
+  locations = upland_grid_sf,
+  nsim = 5,
+  target_names = c("SAND", "SILT", "CLAY")
+)
+
+sims_midslope <- gc_sim_composition(
+  model = model_midslope,
+  locations = midslope_grid_sf,
+  nsim = 5,
+  target_names = c("SAND", "SILT", "CLAY")
+)
+
+# Combine across zones for complete map
+```
+
+# Best Practices
+
+## When to Use Hierarchical Modeling
+
+✓ **Use hierarchical** when:
+- Multiple spatial zones with distinct properties
+- Some zones have few samples
+- Want to share information across zones
+- Need zone-specific uncertainty estimates
+
+✗ **Don't use** if:
+- Only one zone/global model needed
+- Abundant data in each zone (>50 samples)
+- Zones are completely independent
+
+## Backend Selection Decision Tree
+
+```
+Start: Do you need posterior samples?
+  ├─ NO → Use ANALYTICAL (fast, deterministic)
+  │
+  └─ YES → Do you have missing data / complex model?
+      ├─ NO → Use STAN (proven, well-documented)
+      │
+      └─ YES → Use NIMBLE (maximum flexibility)
+```
+
+## Model Validation
+
+```{r validation_checklist}
+validation_steps <- data.frame(
+  Step = 1:5,
+  Check = c(
+    "Shrinkage weights reasonable?",
+    "Zone estimates differ from global?",
+    "Convergence diagnostics OK?",
+    "Simulations satisfy constraints?",
+    "Zone spatial patterns preserved?"
+  ),
+  Action = c(
+    "Adjust shrinkage_strength parameter",
+    "Indicates zones differ; good",
+    "Rhat < 1.1, ESS > 100 required",
+    "Validate sum constraint, ranges",
+    "Visualize each zone separately"
+  )
+)
+
+print(validation_steps)
+```
+
+# Integration with Full Workflow
+
+Hierarchical modeling fits into the complete geocoda workflow:
+
+```{r full_workflow_places, eval=FALSE}
+# 1. Data Preparation (Vignette 01)
+#    ├─ Handle zeros, gaps, multi-source data
+#    └─ Prepare zone-stratified dataset
+
+# 2. Hierarchical Estimation (THIS VIGNETTE)
+#    ├─ Fit zone-specific parameters
+#    └─ Share information via pooling
+
+# 3. Zone-Based Simulation (Section above)
+#    ├─ Simulate each zone independently
+#    └─ Combine for full spatial predictions
+
+# 4. Risk Assessment (Vignette 02)
+#    ├─ Probability mapping per zone
+#    └─ Zone-specific uncertainty
+
+# 5. Visualization & Export
+#    └─ Maps, reports, decision support
+```
+
+# Further Reading
+
+- See **Vignette 03 Deep Dive** for backend technical details
+- See **Vignette 00** for complete workflow example
+- See **FAQ (Vignette 08)** for troubleshooting
+
+# References
+
+- Gelman, A., et al. (2013). Bayesian data analysis (3rd ed.). Chapman and Hall/CRC.
+- Banerjee, S., Carlin, B. P., & Gelfand, A. E. (2014). Hierarchical modeling and analysis for spatial data. Chapman and Hall.

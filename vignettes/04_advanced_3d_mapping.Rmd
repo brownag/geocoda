@@ -1,0 +1,315 @@
+---
+title: "Advanced: 3D Soil Profile Mapping"
+author: "Andrew G. Brown"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_vignette:
+    number_sections: true
+vignette: >
+  %\VignetteIndexEntry{Advanced 3D Mapping}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 8,
+  fig.height = 6,
+  dpi = 100
+)
+```
+
+# Overview
+
+This vignette demonstrates advanced 3D soil profile mapping that extends beyond 2D surface models to include depth-dependent variation. Topics covered:
+
+1. **Depth stratification** - Standardizing irregular horizon depths
+2. **Horizon-based stratification** - Modeling distinct soil layers
+3. **Phase 3 features** (coming soon) - Multivariate decorrelation (MAF)
+4. **Phase 4 features** (coming soon) - Stratigraphic coordinates for complex geometries
+5. **3D visualization** - Representing soil spatial uncertainty
+
+This vignette is currently focused on **depth stratification** using the `aqp` package integration. Phase 3 and Phase 4 features will extend this to true 3D geostatistics.
+
+# Setup
+
+```{r, message=FALSE}
+library(geocoda)
+library(terra)
+library(sf)
+
+set.seed(42)
+```
+
+# Depth Stratification Basics
+
+## Model Each Depth Interval Separately
+
+Real-world soil survey data typically comes from multiple depths. Rather than treating depth as a covariate, we can model each depth interval independently:
+
+```{r depth_data}
+# Multi-depth soil observations
+soil_profiles <- data.frame(
+  profile_id = c(1, 1, 1, 2, 2, 2, 3, 3, 3),
+  depth_label = rep(c("A", "B", "C"), 3),
+  depth_cm = rep(c(10, 45, 90), 3),
+  x = rep(c(10, 30, 50), each = 3),
+  y = rep(c(20, 40, 60), each = 3),
+  SAND = c(60, 45, 35, 58, 42, 32, 62, 48, 38),
+  SILT = c(25, 35, 40, 27, 38, 42, 23, 34, 38),
+  CLAY = c(15, 20, 25, 15, 20, 26, 15, 18, 24)
+)
+
+# Verify compositional constraint
+soil_profiles$total <- rowSums(soil_profiles[, c("SAND", "SILT", "CLAY")])
+cat("All totals ~100%:", all(abs(soil_profiles$total - 100) < 0.01), "\n")
+
+# Examine depth trends
+cat("\nDepth trends:\n")
+for (depth in unique(soil_profiles$depth_label)) {
+  subset_data <- soil_profiles[soil_profiles$depth_label == depth, ]
+  cat("Horizon", depth, "- Mean sand:",
+      round(mean(subset_data$SAND), 1), "%,",
+      "Mean clay:", round(mean(subset_data$CLAY), 1), "%\n")
+}
+
+cat("\nInterpretation: Surface (A) has more sand, subsurface (C) has more clay\n")
+```
+
+## Horizon-Specific Modeling
+
+```{r horizon_modeling}
+# Prepare data for ILR transformation per horizon
+for (horizon in c("A", "B", "C")) {
+  horizon_data <- soil_profiles[soil_profiles$depth_label == horizon,
+                                c("SAND", "SILT", "CLAY")]
+
+  # ILR parameters
+  ilr_params <- gc_ilr_params(horizon_data)
+
+  cat("\n", horizon, "horizon ILR parameters:\n")
+  cat("  Mean:", round(ilr_params$mean, 3), "\n")
+  cat("  Variance:", round(diag(ilr_params$cov), 3), "\n")
+}
+
+cat("\nKey insight: Each horizon has distinct covariance structure\n")
+```
+
+# Depth-Stratified Workflow
+
+## Step-by-Step Approach
+
+```{r depth_workflow}
+# 1. PREPARE: Separate data by depth
+horizons <- list(
+  A = soil_profiles[soil_profiles$depth_label == "A", ],
+  B = soil_profiles[soil_profiles$depth_label == "B", ],
+  C = soil_profiles[soil_profiles$depth_label == "C", ]
+)
+
+# 2. TRANSFORM: ILR parameters per horizon
+horizon_ilr <- list()
+for (h_name in names(horizons)) {
+  horizon_ilr[[h_name]] <- gc_ilr_params(
+    horizons[[h_name]][, c("SAND", "SILT", "CLAY")]
+  )
+}
+
+# 3. VARIOGRAM: Fit per-horizon variograms
+# (In practice, fit real variograms; skipped here for brevity)
+
+# 4. SIMULATE: Generate realizations per horizon
+# (Each horizon simulated independently)
+
+# 5. COMBINE: Create 3D output products
+cat("Workflow complete.\n")
+cat("Output: 3 independent 2D maps (one per horizon)\n")
+cat("Next: Stack into 3D volume for visualization\n")
+```
+
+## Creating Standardized Depth Slices
+
+Future integration with `aqp` package will enable mass-preserving spline standardization to GlobalSoilMap depths (0-5, 5-15, 15-30, etc.):
+
+```{r standardized_depths_placeholder, eval=FALSE}
+# COMING: Phase 3 feature - aqp integration
+
+# Standardize to GlobalSoilMap depths
+standardized <- gc_standardize_depths(
+  profiles = soil_profiles,
+  method = "spline",  # Mass-preserving
+  intervals = c(5, 15, 30, 60, 100)  # cm depths
+)
+
+# Result: Standardized compositions at fixed depths
+# Enables comparison across surveys with different depth schemes
+```
+
+# Phase 3: Multivariate Decorrelation (Coming Soon)
+
+## Minimum/Maximum Autocorrelation Factors (MAF)
+
+Phase 3 will introduce **MAF decorrelation** for improved multivariate simulation. MAF separates spatial signal from noise:
+
+```{r maf_concept, eval=FALSE}
+# COMING: Phase 3 feature - MAF implementation
+
+# Two approaches:
+
+# Option 1: MAF on ILR coordinates (spatial decorrelation)
+# Apply MAF to ILR space, simulate MAF factors independently, back-rotate
+maf_ilr <- gc_maf_transform(
+  ilr_coords,
+  coords = coordinates,
+  lag_h = 50,  # Lag for spatial covariance
+  method = "spatial"
+)
+
+# Option 2: MAF on non-compositional properties
+# Decorrelate pH, CEC, OM, etc. for joint simulation
+maf_props <- gc_maf_transform(
+  multivariate_data,
+  coords = coordinates,
+  method = "compositional"
+)
+
+# Simulate MAF factors independently
+# Result: Improved correlation structure reproduction
+```
+
+**Use when**: Multiple correlated properties, want to reduce redundancy in simulation.
+
+# Phase 4: 3D Stratigraphic Coordinates (Coming Soon)
+
+## True 3D Geostatistics
+
+Phase 4 will introduce **stratigraphic coordinate transformation** for complex geometries:
+
+```{r stratigraphic_placeholder, eval=FALSE}
+# COMING: Phase 4 feature - Stratigraphic coordinates
+
+# Define horizon surfaces (top and bottom of soil layer)
+top_surface <- dem_raster  # Interpolated horizon top
+bottom_surface <- bedrock_raster  # Bedrock surface
+
+# Transform to stratigraphic coordinates
+# z_strat = (z - z_base) / (z_top - z_base) × h_constant
+data_strat <- gc_stratigraphic_transform(
+  data = soil_profiles,
+  surfaces = list(top = top_surface, bottom = bottom_surface),
+  transform_type = "proportional"
+)
+
+# 3D kriging/simulation in stratigraphic space
+# Preserves parallel-to-surface pedogenic processes
+# Handles sloping landscapes, complex geometries
+
+# Back-transform to Cartesian coordinates (x, y, z)
+predictions_xyz <- gc_inverse_stratigraphic_transform(
+  data_strat,
+  surfaces = list(top = top_surface, bottom = bottom_surface)
+)
+```
+
+**Use when**: Complex topography, sloping horizons, eroded profiles requiring true 3D representation.
+
+# Current Capabilities & Roadmap
+
+## What Works Now (2D + Depth Covariate)
+
+✓ Separate modeling per horizon/depth
+✓ Hierarchical zone models with depth stratification
+✓ Depth as external predictor (covariate approach)
+✓ 2D simulation for each depth independently
+
+## What's Coming (Phase 3)
+
+⏳ **MAF decorrelation** - Separate spatial signal from noise
+⏳ Direct block simulation - Management-unit scale uncertainty
+⏳ Integration with aqp for spline-based standardization
+
+## What's Coming (Phase 4)
+
+⏳ **Stratigraphic coordinates** - True 3D unwrinkling
+⏳ 3D variogram modeling with anisotropy
+⏳ Complex landscape 3D simulation
+
+# Practical Example: CurrentCapabilities
+
+## Complete Depth-Stratified Workflow
+
+```{r depth_workflow_example, eval=FALSE}
+# 1. Prepare A and C horizons separately
+surface_data <- soil_data[soil_data$depth < 30, ]
+subsurface_data <- soil_data[soil_data$depth > 60, ]
+
+# 2. ILR transform each
+surf_ilr <- gc_ilr_params(surface_data[, c("SAND", "SILT", "CLAY")])
+sub_ilr <- gc_ilr_params(subsurface_data[, c("SAND", "SILT", "CLAY")])
+
+# 3. Fit variograms per horizon
+vgm_surface <- gc_fit_vgm(surf_ilr, data = surface_data_ilr)
+vgm_subsurface <- gc_fit_vgm(sub_ilr, data = subsurface_data_ilr)
+
+# 4. Build models
+model_surface <- gc_ilr_model(surf_ilr, vgm_surface)
+model_subsurface <- gc_ilr_model(sub_ilr, vgm_subsurface)
+
+# 5. Simulate independently
+sims_surface <- gc_sim_composition(
+  model_surface, grid_sf, nsim = 10,
+  target_names = c("SAND", "SILT", "CLAY")
+)
+
+sims_subsurface <- gc_sim_composition(
+  model_subsurface, grid_sf, nsim = 10,
+  target_names = c("SAND", "SILT", "CLAY")
+)
+
+# 6. Create output: 2D + depth dimension
+# Combine for complete 3D representation (surface + subsurface maps)
+```
+
+# Best Practices for Depth Stratification
+
+1. **Define depth breaks clearly** - A (0-30cm), B (30-60cm), C (60+ cm)
+2. **Model independently** - Don't assume covariance between depths
+3. **Validate per horizon** - Check constraints separately
+4. **Document assumptions** - Are boundaries fixed or variable?
+5. **Plan for Phase 3/4** - Current approach is 2D per depth, not true 3D
+
+# Integration Points
+
+- **Vignette 00**: Include depth considerations in workflow
+- **Vignette 01**: Depth-stratified data preparation
+- **Vignette 03**: Hierarchical models with depth + zone structure
+- **Vignette 09**: When MAF (Phase 3) will be documented
+
+# Future Development
+
+This vignette will be updated as Phase 3 and Phase 4 features are released:
+
+```{r future_updates}
+updates_planned <- data.frame(
+  Phase = c("Now", "Phase 3", "Phase 4"),
+  Feature = c(
+    "2D + depth covariate",
+    "MAF decorrelation",
+    "Stratigraphic coordinates"
+  ),
+  Capability = c(
+    "Separate horizon models",
+    "Multivariate optimization",
+    "True 3D geostatistics"
+  )
+)
+
+print(updates_planned)
+```
+
+# References
+
+- Bishop, T. F., McBratney, A. B., & Laslett, G. M. (1999). Modelling soil attribute depth functions with equal-area quadratic smoothing splines. *Geoderma*, 91(1-2), 27-45.
+- Malone, B. P., McBratney, A. B., & Minasny, B. (2017). Empirical estimates of uncertainty for mapping continuous soil properties using random forests. *Geoderma*, 291, 147-159.

@@ -1,0 +1,89 @@
+---
+title: "SSURGO Integration: Live Queries & Multi-Source Data"
+author: "Andrew G. Brown"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_vignette:
+    number_sections: true
+vignette: >
+  %\VignetteIndexEntry{SSURGO Integration}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 8,
+  fig.height = 6,
+  dpi = 100
+)
+```
+
+# Overview
+
+This vignette demonstrates integration of SSURGO (Soil Survey Geographic) database with geocoda for large-scale soil mapping. Topics covered:
+
+1. **Live SSURGO queries** via soilDB package
+2. **Component aggregation** - Weighting within map units
+3. **Tile-based workflows** - Spatial optimization for large areas
+4. **Integration with field data** - Combining SSURGO with observed samples
+5. **Multi-source uncertainty** - Weighting by data quality
+
+## Vignette Status
+
+This is a **minimal scaffold vignette**. It will be filled in with complete examples and demonstrations after Phase 3 and Phase 4 implementation.
+
+## Key Concepts (To Be Expanded)
+
+**SSURGO strengths:**
+- Complete spatial coverage (entire USA)
+- Standardized component definitions
+- Mapunit hierarchies
+
+**Integration approach:**
+- Use as spatial prior/context
+- Weight by component percentage
+- Combine with field observations
+
+**Tile-based optimization:**
+- Query large regions efficiently
+- Cache results (24-hour TTL)
+- Parallel processing
+
+## Placeholder: Complete Example
+
+```{r placeholder, eval=FALSE}
+# COMING: Complete SSURGO integration workflow
+
+# 1. Query SSURGO for study area
+# ssurgo_data <- soilDB::fetchSDA(...)
+
+# 2. Extract component data
+# components <- aggregate_components(ssurgo_data)
+
+# 3. Combine with field observations
+# combined <- rbind(field_obs, ssurgo_components)
+
+# 4. Weight by source quality
+# weighted <- weight_by_source(combined)
+
+# 5. Model and simulate
+# realizations <- gc_sim_composition(model, grid)
+```
+
+## References & Resources
+
+- See **Vignette 01** for multi-source data weighting
+- See **Vignette 00** for complete workflow
+- [soilDB documentation](https://ncss-tech.github.io/soilDB/)
+
+---
+
+**This vignette will be expanded with:**
+- Live SDA query examples
+- Component aggregation workflows
+- Tile-based spatial optimization
+- Real-world case studies
+- Performance benchmarks

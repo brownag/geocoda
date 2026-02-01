@@ -1,0 +1,387 @@
+---
+title: "Phase 3 & 4 Features: Coming Soon"
+author: "Andrew G. Brown"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_vignette:
+    number_sections: true
+vignette: >
+  %\VignetteIndexEntry{Phase 3 & 4 Features Preview}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 8,
+  fig.height = 6,
+  dpi = 100
+)
+```
+
+# Overview
+
+Roadmap and preview of major features coming in Phase 3 and Phase 4 of geocoda development. These phases extend capabilities to advanced mining geostatistics for comprehensive soil mapping at multiple scales.
+
+## Current Status
+
+- **Phase 1**: Risk Assessment ✓ Complete (v0.3.0)
+- **Phase 2**: Multi-Backend Hierarchical Models ✓ Complete (v0.2.0+)
+- **Phase 3**: Multivariate Decorrelation & Block Simulation (IN PROGRESS)
+- **Phase 4**: 3D Stratigraphic Modeling (PLANNED)
+
+# Phase 3: Advanced Multivariate Modeling
+
+## Overview
+
+Phase 3 focuses on:
+1. **Minimum/Maximum Autocorrelation Factors (MAF)** - Optimize multivariate structure
+2. **Direct Block Simulation (DBS)** - Management-scale uncertainty quantification
+3. **Vertical Discretization** - Standardized depth slices
+
+## 3.1: Multivariate Autocorrelation Factors (MAF)
+
+### What MAF Does
+
+MAF decorrelates multivariate data at specified spatial lag, revealing hidden spatial structure:
+
+```{r maf_concept, eval=FALSE}
+# COMING: MAF implementation and demonstrations
+
+# Two-stage approach:
+# 1. PCA at lag 0: Decorrelate collocated values
+# 2. Diagonalize semivariogram matrix at lag h: Separate spatial signal from noise
+# Result: Factors ordered by spatial continuity (high → low)
+
+# Applications:
+# - Apply to ILR coordinates (compositional decorrelation)
+# - Apply to non-compositional properties (pH, CEC, OM, etc.)
+# - Joint compositional + non-compositional simulation
+```
+
+### Expected Capabilities
+
+```{r maf_functions, eval=FALSE}
+# COMING: Phase 3 MAF functions
+
+# gc_maf_transform(data, coords, lag_h, method)
+# - Input: Multivariate spatial data
+# - Output: MAF factors ordered by spatial continuity
+
+# gc_maf_variograms(maf_object)
+# - Compute variograms for each MAF factor
+
+# gc_sim_maf(maf_model, extent, nsim)
+# - Simulate MAF factors independently
+# - Back-rotate to original variables
+# - Preserve spatial correlation structure
+
+# gc_maf_diagnostics(maf_object)
+# - Variance explained by each factor
+# - Signal vs noise identification
+```
+
+### Use Cases
+
+- **Compositional data**: MAF post-ILR reveals optimal spatial structure for simulation
+- **Non-compositional soil properties**: MAF on pH, CEC, bulk density enables joint simulation
+- **Noise reduction**: Low-autocorrelation factors identified and can be excluded
+- **Multivariate risk assessment**: MAF factors correlated with outcomes
+
+## 3.2: Direct Block Simulation (DBS)
+
+### What DBS Does
+
+Simulates block-support values directly, accounting for volume-variance relationship:
+
+```{r dbs_concept, eval=FALSE}
+# COMING: Direct block simulation implementation
+
+# Traditional approach (point then aggregate):
+# 1. Simulate point values (higher variance)
+# 2. Average points within blocks
+# Result: Block averages biased by point-scale variability
+
+# DBS approach (direct block):
+# 1. Compute block-to-block and block-to-point covariances
+# 2. Sequentially simulate block values directly
+# 3. Condition on observed point/block data
+# Result: Block variance < point variance (volume-variance relationship)
+
+# Computational benefit: ~10x faster for large-scale applications
+```
+
+### Expected Capabilities
+
+```{r dbs_functions, eval=FALSE}
+# COMING: Phase 3 DBS functions
+
+# gc_ilr_model(..., support = c("point", "block"))
+# - Specify simulation support: point or block
+
+# gc_dbs_covariance(variogram_model, block_size)
+# - Compute block-support covariances
+
+# gc_sim_composition(..., support = "block", block_size)
+# - Direct block simulation in ILR space
+# - Back-transform to compositional with block-scale constraints
+
+# gc_compare_supports(point_sims, block_sims)
+# - Verify volume-variance relationship
+```
+
+### Use Cases
+
+- **Carbon credit auditing**: Management-unit scale uncertainty for credit issuance
+- **Precision agriculture**: Field-scale remediation decisions
+- **Contamination risk**: Site assessment at remediation block scale
+- **Large-scale mapping**: Efficiency for continental/global applications
+
+## 3.3: Vertical Discretization with Splines
+
+### What Standardized Depths Do
+
+Mass-preserving spline transformation of irregular soil horizons to standardized depth intervals:
+
+```{r vertical_discretization, eval=FALSE}
+# COMING: Vertical discretization with aqp integration
+
+# GlobalSoilMap standard depths: 0-5, 5-15, 15-30, 30-60, 60-100 cm
+
+# Integration with aqp package:
+# - Bishop et al. (1999) mass-preserving equal-area quadratic splines
+# - Enables comparison across surveys with different depth schemes
+# - Continuous depth functions for querying at any depth
+
+# Conservation property:
+# ∫(depth_start to depth_end) f(z) dz = measured_value
+```
+
+### Expected Capabilities
+
+```{r vertical_functions, eval=FALSE}
+# COMING: Phase 3 vertical discretization functions
+
+# gc_standardize_depths(profiles, method, intervals)
+# - Spline standardization to specified depth intervals
+# - Mass conservation validation
+
+# gc_depth_profile(profile_data, property)
+# - Continuous depth function from spline
+# - Query at any depth
+
+# gc_depth_statistics(profiles, intervals)
+# - Depth-stratified statistics
+# - Layer-by-layer summaries
+```
+
+### Use Cases
+
+- **GlobalSoilMap compliance**: Standard depth intervals for international databases
+- **Depth function modeling**: Continuous vs discrete depth representation
+- **Cross-survey integration**: Harmonize depth schemes across different surveys
+- **Soil property modeling**: Assess depth-dependent variation
+
+# Phase 4: True 3D Geostatistics
+
+## Overview
+
+Phase 4 focuses on:
+1. **Stratigraphic Coordinate Transformation** - Unwrinkling complex landscapes
+2. **3D Variogram Modeling** - Anisotropy in 3D
+3. **3D Simulation** - True 3D spatial uncertainty quantification
+
+## 4.1: Stratigraphic Coordinates
+
+### What Stratigraphic Transformation Does
+
+Transforms complex folded/sloping soil horizons into flattened "stratigraphic" space:
+
+```{r stratigraphic_concept, eval=FALSE}
+# COMING: Stratigraphic coordinate transformation
+
+# Problem: Regular (x, y, z) coordinates misrepresent soil structure
+# - Sloping horizons violate stationarity assumption
+# - Spatial continuity parallel to surfaces (not vertical)
+# - Complex folding/erosion patterns
+
+# Solution: Transform to stratigraphic coordinates (x, y, z_strat)
+# - Restore parallel-to-surface spatial continuity
+# - Flatten folded/sloping landscapes
+# - Preserve pedogenic process representation
+
+# Transformation types:
+# 1. Proportional: z_strat = (z - z_base) / (z_top - z_base) × h
+# 2. Top-onlap: z_strat = z_top - z
+# 3. Bottom-erosional: z_strat = z - z_base
+# 4. Rotational: Apply rotation matrix for dip/azimuth
+```
+
+### Expected Capabilities
+
+```{r stratigraphic_functions, eval=FALSE}
+# COMING: Phase 4 stratigraphic coordinate functions
+
+# gc_define_surfaces(top_surface, bottom_surface)
+# - Define bounding surfaces (top and bottom of soil layer)
+# - Surfaces can be DEM-like rasters or interpolated
+
+# gc_stratigraphic_transform(data, surfaces, transform_type)
+# - Apply transformation to (x, y, z) → (x, y, z_strat)
+
+# gc_inverse_stratigraphic_transform(data_strat, surfaces)
+# - Back-transform from stratigraphic → Cartesian coordinates
+
+# gc_3d_variogram(data_strat, directions)
+# - 3D variogram modeling in stratigraphic space
+# - Anisotropy (different ranges horizontal vs vertical)
+```
+
+### Use Cases
+
+- **Complex topography**: Sloping landscapes with parallel horizons
+- **Eroded profiles**: Truncated soil horizons on hillslopes
+- **Folded bedrock**: Stratum-scale variability in parent material
+- **Pedogenic processes**: Model soil formation parallel to surfaces
+
+## 4.2: 3D Variogram Modeling
+
+### What 3D Variograms Capture
+
+Spatial continuity in three dimensions with anisotropy:
+
+```{r 3d_variogram_concept, eval=FALSE}
+# COMING: 3D variogram modeling
+
+# 2D variogram: Describes lateral spatial continuity only
+# 3D variogram: Lateral + vertical continuity
+
+# Anisotropy types:
+# 1. Geometric: Different ranges in horizontal vs vertical
+#    - Often: horizontal range >> vertical range
+#    - Example: 100 m horizontal, 5 m vertical
+
+# 2. Zonal: Different variance in different directions
+#    - Possible in complex stratigraphic sequences
+
+# 3D covariance functions:
+# - Exponential: C(h) = C0 * exp(-h/a)
+# - Spherical: C(h) = C0 * (1 - 1.5*(h/a) + 0.5*(h/a)³) [if h < a]
+# - Gaussian: C(h) = C0 * exp(-(h/a)²)
+```
+
+### Expected Capabilities
+
+```{r 3d_variogram_functions, eval=FALSE}
+# COMING: Phase 4 3D variogram functions
+
+# gc_3d_variogram(data_3d, directions)
+# - Compute 3D experimental variogram
+# - Multiple directions (horizontal, vertical, oblique)
+
+# gc_fit_3d_variogram(vgm_3d, model_type, anisotropy)
+# - Fit theoretical 3D variogram model
+# - Geometric anisotropy with ratio h_range/v_range
+
+# gc_3d_lmc(variograms_3d, model_types)
+# - Linear model of coregionalization for 3D multivariate data
+```
+
+### Use Cases
+
+- **Soil profile mapping**: Vertical soil property variation
+- **Landscape-scale assessment**: Topography-controlled heterogeneity
+- **Subsurface characterization**: Depth-dependent variability
+- **Climate adaptation models**: Vertically-integrated soil properties
+
+## 4.3: 3D Simulation in Stratigraphic Space
+
+### Expected Capabilities
+
+```{r 3d_simulation_functions, eval=FALSE}
+# COMING: Phase 4 3D simulation functions
+
+# gc_3d_sim(model_3d, extent_3d, resolution_3d, nsim)
+# - Sequential Gaussian simulation in 3D
+# - Stratigraphic or Cartesian coordinates
+
+# gc_define_3d_extent(x_range, y_range, z_range, resolution)
+# - Specify 3D prediction grid
+
+# Output: terra::SpatRaster with z-dimension layers
+# - Can be exported to netCDF for 3D visualization
+# - Compatible with 3D visualization tools (VTK, Paraview)
+```
+
+# Integration Roadmap
+
+## Phase 3 Integration Points
+
+MAF + DBS + Vertical Discretization:
+```
+Data → [Vertical discretization] → Standardized depths
+     → [ILR transform] → ILR space
+     → [MAF] → Decorrelated factors
+     → [Variogram per factor] → Independent variograms
+     → [Simulation: point or block support] → Realizations
+     → [MAF back-rotation] → Correlated variables
+     → [ILR back-transform] → Compositional with constraints
+```
+
+## Phase 4 Integration Points
+
+Stratigraphic + 3D:
+```
+Data with horizons → [Define surfaces] → Top/bottom rasters
+                   → [Stratigraphic transform] → (x,y,z_strat) space
+                   → [ILR transform] → ILR space
+                   → [3D variogram] → Directional structure
+                   → [3D simulation] → Realizations in stratigraphic space
+                   → [Inverse strat transform] → (x,y,z) Cartesian
+                   → [ILR back-transform] → Spatial composition
+```
+
+# Compatibility Matrix
+
+|  | Vignette 00-04 | Phase 1 Risk | Phase 3 MAF/DBS | Phase 4 3D |
+|--|---|---|---|---|
+| Compositional data | ✓ | ✓ | ✓ | ✓ |
+| Non-compositional | Limited | ✓ | ✓ | ✓ |
+| Zone-based | ✓ | ✓ | ✓ (per-zone) | ✓ |
+| Hierarchical models | ✓ | ✓ | ✓ | ✓ |
+| 2D spatial | ✓ | ✓ | ✓ | ✓ |
+| 3D spatial | Limited | Limited | Limited | ✓ |
+| Block support | No | No | ✓ | ✓ |
+
+# Research References
+
+## Phase 3 Foundation
+
+- Switzer, P., & Green, A. A. (1984). Non-linear inversion of seismic reflection data. Journal of Geophysical Research, 89(B2), 1305-1313.
+- Desbarats, A. J., & Dimitrakopoulos, R. (2000). Geostatistical simulation of regionalized pore-size distributions. Mathematical Geology, 32(8), 919-942.
+- Godoy, M. C. (2003). The effective management of geological risk in long-term mine planning. PhD thesis.
+
+## Phase 4 Foundation
+
+- Deutsch, C. V., & Journel, A. G. (1992). GSLIB: Geostatistical software library and user's guide. Oxford University Press.
+- Bishop, T. F., McBratney, A. B., & Laslett, G. M. (1999). Modelling soil attribute depth functions with equal-area quadratic smoothing splines. Geoderma, 91(1-2), 27-45.
+
+# Timeline & Effort
+
+| Phase | Components | Est. Effort | Target |
+|-------|-----------|------------|--------|
+| **Phase 3** | MAF + DBS + Vertical Discretization | 8-10 weeks | v0.5.0 |
+| **Phase 4** | Stratigraphic coords + 3D simulation | 10-14 weeks | v1.0.0 |
+
+# How to Follow Development
+
+- Track progress on GitHub: https://github.com/brownag/geocoda
+- Phase 3 feature branch: `feature/phase3-advanced-modeling`
+- Phase 4 feature branch: `feature/phase4-3d-modeling`
+- Discussion: GitHub Discussions
+
+---
+
+**Check back here as Phase 3 and Phase 4 features are released!**

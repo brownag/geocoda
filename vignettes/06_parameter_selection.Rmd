@@ -1,0 +1,96 @@
+---
+title: "Parameter Selection Guide"
+author: "Andrew G. Brown"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_vignette:
+    number_sections: true
+vignette: >
+  %\VignetteIndexEntry{Parameter Selection}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 8,
+  fig.height = 6,
+  dpi = 100
+)
+```
+
+# Overview
+
+Reference guide for selecting variogram and modeling parameters. This vignette provides practical guidance for:
+
+1. **Variogram parameters** - Range, nugget, psill selection
+2. **Computational parameters** - Sample size, grid resolution
+3. **Hierarchical model tuning** - Shrinkage strength, backend selection
+4. **Sensitivity analysis** - How parameters affect predictions
+
+## Vignette Status
+
+**Minimal scaffold** - Expanded from Vignette 10 (Parameter Selection Guide). Will be enhanced with:
+- Interactive parameter calculators
+- Sensitivity analysis plots
+- Real-world case studies
+- Decision flowcharts
+
+## Key Topics (To Be Expanded)
+
+### Variogram Range Selection
+
+The range parameter defines spatial correlation decay distance.
+
+**Default:** Domain diagonal / 3
+
+**Scaling guidance:**
+- 0.5x: Fine-scale local variation
+- 1.0x: Standard (recommended)
+- 1.5x: Large-scale smooth trends
+- 2.0x: Very smooth fields
+
+### Nugget Parameter
+
+Nugget represents measurement error + local variability.
+
+- Typical: 10-30% of sill
+- Small: Smooth surfaces
+- Large: Rough surfaces with noise
+
+### Psill Parameter
+
+Partial sill (maximum variogram value - nugget).
+
+- Controls variance amplitude
+- Must be positive
+- Often normalized to 1.0
+
+## Placeholder: Decision Tree
+
+```{r decision_tree, eval=FALSE}
+# COMING: Interactive parameter selection guide
+
+# Question flow:
+# 1. What is your domain size?
+# 2. How many samples do you have?
+# 3. What temporal/spatial resolution is needed?
+# 4. How smooth should predictions be?
+
+# Returns: Parameter recommendations with ranges
+```
+
+## References
+
+See **Vignette 00** for workflow context.
+
+---
+
+**This vignette will be expanded with:**
+- Parameter sensitivity analysis
+- Visual parameter effects
+- Calculator tools
+- Domain-specific guidance (soil texture, geochemistry, etc.)
+- Cross-validation optimization workflows

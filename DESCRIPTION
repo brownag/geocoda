@@ -4,6 +4,7 @@ Version: 0.2.0
 Author: Andrew G. Brown
 Authors@R: person("Andrew", "Brown", , "brown.andrewg@gmail.com", role = c("aut", "cre"))
 Maintainer: Andrew G. Brown <brown.andrewg@gmail.com>
+Depends: R (>= 4.1.0)
 Description: Complete geostatistical workflow for spatial simulation and mapping of soil 
     compositional data (sand, silt, clay percentages) using Isometric Log-Ratio (ILR) 
     transformations. Features include kriging-based simulation with compositional 

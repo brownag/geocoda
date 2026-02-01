@@ -7,10 +7,7 @@
 gc_fit_hierarchical_model(
   data,
   prior_spec,
-  n_iter = 2000,
-  n_burnin = 500,
-  n_chains = 2,
-  adapt_delta = 0.8,
+  backend = "analytical",
   verbose = TRUE
 )
 }
@@ -19,17 +16,8 @@ gc_fit_hierarchical_model(
 
 \item{prior_spec}{An object of class \code{"gc_prior_spec"} (from \code{gc_set_hierarchy_priors()})}
 
-\item{n_iter}{DEPRECATED. Reserved for future MCMC implementation (v0.3.0).
-Currently ignored. Do not use.}
-
-\item{n_burnin}{DEPRECATED. Reserved for future MCMC implementation (v0.3.0).
-Currently ignored. Do not use.}
-
-\item{n_chains}{DEPRECATED. Reserved for future MCMC implementation (v0.3.0).
-Currently ignored. Do not use.}
-
-\item{adapt_delta}{DEPRECATED. Reserved for future MCMC implementation (v0.3.0).
-Currently ignored. Do not use.}
+\item{backend}{Character, fitting backend: \code{"analytical"} (default, fast shrinkage estimates),
+\code{"stan"} (HMC MCMC, requires rstan), or \code{"nimble"} (adaptive MCMC, requires nimble)}
 
 \item{verbose}{Logical, print estimation progress (default TRUE)}
 }
@@ -38,10 +26,10 @@ An S3 object of class \code{"gc_hierarchical_fit"} containing:
 \itemize{
 \item \code{zone_estimates}: Zone-specific parameter estimates (mean, covariance)
 \item \code{global_estimates}: Global parameter estimates (mean, covariance)
-\item \code{shrinkage_weights}: Pooling weights applied to each zone
-\item \code{zone_summaries}: Data frame with posterior means, SDs, CIs per zone
+\item \code{samples}: Posterior samples (NULL for analytical, matrix for MCMC backends)
+\item \code{diagnostics}: Backend-specific diagnostics
 \item \code{prior_spec}: Original prior specification
-\item \code{metadata}: Fitting information including method and timestamp
+\item \code{metadata}: Fitting information including backend and timestamp
 }
 }
 \description{
@@ -52,15 +40,17 @@ This method provides fast analytical estimates suitable for exploration,
 visualization, and initial inference.
 }
 \details{
-\strong{NOTE}: This is empirical Bayes shrinkage, NOT full Bayesian MCMC inference.
-True Bayesian MCMC with posterior sampling is planned for geocoda v0.3.0.
+\strong{NOTE}: This is empirical Bayes shrinkage (analytical method). For full Bayesian
+MCMC inference with posterior sampling, use \code{backend = "stan"} or \code{backend = "nimble"}
+(requires installation of rstan or nimble packages respectively).
+\subsection{Analytical Backend (default)}{
 
-The shrinkage estimation method:
+Fast empirical Bayes shrinkage method:
 \enumerate{
 \item Computes zone-specific maximum likelihood estimates (MLE)
 \item Pools zone estimates toward global mean via weighted average
 \item Shrinkage strength controlled by \code{pooling_coefficient} from priors
-\item Analytical solution with no MCMC sampling
+\item Closed-form analytical solution with no MCMC sampling
 }
 
 Shrinkage formula:
@@ -77,8 +67,18 @@ where \code{lambda = pooling_coefficient} from \code{gc_set_hierarchy_priors()}:
 \item lambda = 0.5: Strong pooling toward global
 }
 
-This is suitable for quick exploration and visualization. For publication-quality
-Bayesian inference with full posterior distributions, use true MCMC (planned for v0.3.0).
+Suitable for quick exploration and visualization. For publication-quality Bayesian
+inference with full posterior distributions, use Stan or Nimble backends.
+}
+
+\subsection{MCMC Backends (Stan, Nimble)}{
+
+Full Bayesian inference with posterior sampling. Requires rstan or nimble to be installed:
+
+\if{html}{\out{<div class="sourceCode r">}}\preformatted{install.packages("rstan")  # For Stan backend
+install.packages("nimble") # For Nimble backend
+}\if{html}{\out{</div>}}
+}
 }
 \examples{
 \dontrun{
@@ -91,9 +91,13 @@ data_zones <- data.frame(
   zone = rep(c("Zone1", "Zone2", "Zone3"), each = 5),
   ilr1 = rnorm(15), ilr2 = rnorm(15)
 )
-# Estimate with shrinkage
-fit <- gc_fit_hierarchical_model(data_zones, priors)
-print(fit)
+
+# Fast analytical shrinkage estimates (default)
+fit_analytical <- gc_fit_hierarchical_model(data_zones, priors)
+print(fit_analytical)
+
+# Full MCMC inference with Stan (requires rstan)
+# fit_stan <- gc_fit_hierarchical_model(data_zones, priors, backend = "stan")
 }
 
 }

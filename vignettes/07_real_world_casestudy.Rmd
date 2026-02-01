@@ -182,11 +182,7 @@ head(sds)
 
 ---
 
-## References
-
-- See vignettes 01-06 for detailed workflow steps
-print(ilr_params_top$cov)
-
+```{r deep_soil_params}
 # Also prepare C horizon separately (deeper soils)
 deep_soil <- field_pits[field_pits$depth == "C", ]
 ilr_params_deep <- gc_ilr_params(
@@ -196,6 +192,10 @@ ilr_params_deep <- gc_ilr_params(
 cat("\nILR Parameters (C horizon, 30+ cm):\n")
 print(ilr_params_deep$mean)
 ```
+
+## References
+
+- See vignettes 01-06 for detailed workflow steps
 
 ## Step 3: Fit Variogram
 

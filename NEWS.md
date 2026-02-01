@@ -1,5 +1,70 @@
 # geocoda (development version)
 
+## New Features - Phase 1: Risk Assessment & Decision Support
+
+### Risk Assessment Functions
+
+**Probability Mapping:**
+- `gc_probability_map()` - Calculate probability of exceeding threshold at each location
+  - Supports multiple operators: >, >=, <, <=, ==
+  - NA handling for robust computation
+  - Output: SpatRaster with probability values in [0, 1]
+
+**Percentile Mapping:**
+- `gc_percentile_map()` - Compute percentiles (e.g., P10, P50, P90) from realizations
+  - Standard uncertainty quantification framework
+  - Custom percentile lists and naming formats
+  - Conservative/optimistic bounds for decision-making
+
+**Risk Assessment with Loss Functions:**
+- `gc_risk_assessment()` - Integrate asymmetric costs into decision framework
+  - Linear (symmetric), asymmetric (two-sided), step (binary) loss functions
+  - Custom loss function support for advanced users
+  - Expected loss maps for optimal decision boundaries
+  - Cost parameters: a (false positive cost), b (false negative cost)
+
+**Carbon Credit Auditing:**
+- `gc_carbon_audit()` - Specialized wrapper for carbon stock verification
+  - Conservative, expected, optimistic audit types
+  - Confidence-based decision thresholds
+  - Human-readable audit reports with summary statistics
+  - Works with spatial (SpatRaster) and non-spatial (data.frame) data
+  - Integration with carbon credit programs (payment-for-ecosystem-services)
+
+### Documentation & Vignettes
+
+- **New vignette**: "Risk Assessment and Decision Support in Soil Mapping"
+  - Complete workflow from simulation to decision
+  - Carbon credit eligibility example
+  - Contamination remediation case study
+  - Management zone delineation
+  - Loss function framework and best practices
+
+### Features
+
+- Post-processes simulation realizations for decision support
+- No changes to existing simulation functions or output structures
+- Works seamlessly with `gc_sim_composition()`, `gc_simulate_zones()`, `gc_sim_hierarchical()`
+- Compatible with all hierarchical backends (analytical, Stan, Nimble)
+- No new external dependencies added
+
+### Backward Compatibility
+
+- ✓ Fully backward compatible
+- ✓ All existing tests continue to pass
+- ✓ Risk assessment functions are opt-in (new functions, no modifications to existing)
+- ✓ Existing code requires zero modifications
+
+### Testing
+
+- 144 automated tests for risk assessment functions
+- Unit tests: probability mapping, percentile calculation, loss functions
+- Integration tests: with existing geocoda functions
+- Validation tests: against theoretical probability distributions
+- Edge case handling: missing values, extreme thresholds, custom loss functions
+
+---
+
 ## New Features - Phase 2: Multi-Backend Hierarchical Models
 
 ### MCMC Backends for Hierarchical Models

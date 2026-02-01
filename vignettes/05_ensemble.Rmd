@@ -208,10 +208,11 @@ evaluate_cv <- function(sim_list) {
 cv_results <- evaluate_cv(sims_list)
 cv_results$mae
 cv_results$rmse
+```
 
 ---
 
-## Export to Rastersnbsp
+## Export to Rasters
 
 ```{r export}
 export_as_rasters <- function(stats) {

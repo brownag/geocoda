@@ -215,36 +215,34 @@ gc_set_hierarchy_priors <- function(hierarchy,
 #' This method provides fast analytical estimates suitable for exploration,
 #' visualization, and initial inference.
 #'
-#' **NOTE**: This is empirical Bayes shrinkage, NOT full Bayesian MCMC inference.
-#' True Bayesian MCMC with posterior sampling is planned for geocoda v0.3.0.
+#' **NOTE**: This is empirical Bayes shrinkage (analytical method). For full Bayesian
+#' MCMC inference with posterior sampling, use `backend = "stan"` or `backend = "nimble"`
+#' (requires installation of rstan or nimble packages respectively).
 #'
 #' @param data Data frame with columns: zone (factor), ilr1, ilr2, ... (ILR values)
 #' @param prior_spec An object of class `"gc_prior_spec"` (from `gc_set_hierarchy_priors()`)
-#' @param n_iter DEPRECATED. Reserved for future MCMC implementation (v0.3.0).
-#'   Currently ignored. Do not use.
-#' @param n_burnin DEPRECATED. Reserved for future MCMC implementation (v0.3.0).
-#'   Currently ignored. Do not use.
-#' @param n_chains DEPRECATED. Reserved for future MCMC implementation (v0.3.0).
-#'   Currently ignored. Do not use.
-#' @param adapt_delta DEPRECATED. Reserved for future MCMC implementation (v0.3.0).
-#'   Currently ignored. Do not use.
+#' @param backend Character, fitting backend: `"analytical"` (default, fast shrinkage estimates),
+#'   `"stan"` (HMC MCMC, requires rstan), or `"nimble"` (adaptive MCMC, requires nimble)
 #' @param verbose Logical, print estimation progress (default TRUE)
 #'
 #' @return An S3 object of class `"gc_hierarchical_fit"` containing:
 #'   - `zone_estimates`: Zone-specific parameter estimates (mean, covariance)
 #'   - `global_estimates`: Global parameter estimates (mean, covariance)
-#'   - `shrinkage_weights`: Pooling weights applied to each zone
-#'   - `zone_summaries`: Data frame with posterior means, SDs, CIs per zone
+#'   - `samples`: Posterior samples (NULL for analytical, matrix for MCMC backends)
+#'   - `diagnostics`: Backend-specific diagnostics
 #'   - `prior_spec`: Original prior specification
-#'   - `metadata`: Fitting information including method and timestamp
+#'   - `metadata`: Fitting information including backend and timestamp
 #'
 #' @details
-#' The shrinkage estimation method:
+#'
+#' ## Analytical Backend (default)
+#'
+#' Fast empirical Bayes shrinkage method:
 #'
 #' 1. Computes zone-specific maximum likelihood estimates (MLE)
 #' 2. Pools zone estimates toward global mean via weighted average
 #' 3. Shrinkage strength controlled by `pooling_coefficient` from priors
-#' 4. Analytical solution with no MCMC sampling
+#' 4. Closed-form analytical solution with no MCMC sampling
 #'
 #' Shrinkage formula:
 #'
@@ -259,8 +257,17 @@ gc_set_hierarchy_priors <- function(hierarchy,
 #' - lambda = 0.2: Moderate pooling
 #' - lambda = 0.5: Strong pooling toward global
 #'
-#' This is suitable for quick exploration and visualization. For publication-quality
-#' Bayesian inference with full posterior distributions, use true MCMC (planned for v0.3.0).
+#' Suitable for quick exploration and visualization. For publication-quality Bayesian
+#' inference with full posterior distributions, use Stan or Nimble backends.
+#'
+#' ## MCMC Backends (Stan, Nimble)
+#'
+#' Full Bayesian inference with posterior sampling. Requires rstan or nimble to be installed:
+#'
+#' ```r
+#' install.packages("rstan")  # For Stan backend
+#' install.packages("nimble") # For Nimble backend
+#' ```
 #'
 #' @examples
 #' \dontrun{
@@ -273,182 +280,26 @@ gc_set_hierarchy_priors <- function(hierarchy,
 #'   zone = rep(c("Zone1", "Zone2", "Zone3"), each = 5),
 #'   ilr1 = rnorm(15), ilr2 = rnorm(15)
 #' )
-#' # Estimate with shrinkage
-#' fit <- gc_fit_hierarchical_model(data_zones, priors)
-#' print(fit)
+#'
+#' # Fast analytical shrinkage estimates (default)
+#' fit_analytical <- gc_fit_hierarchical_model(data_zones, priors)
+#' print(fit_analytical)
+#'
+#' # Full MCMC inference with Stan (requires rstan)
+#' # fit_stan <- gc_fit_hierarchical_model(data_zones, priors, backend = "stan")
 #' }
 #'
 #' @export
 gc_fit_hierarchical_model <- function(data,
                                      prior_spec,
-                                     n_iter = 2000,
-                                     n_burnin = 500,
-                                     n_chains = 2,
-                                     adapt_delta = 0.8,
+                                     backend = "analytical",
                                      verbose = TRUE) {
 
-  # Warn if MCMC parameters are not default values
-  # (indicating user expects MCMC functionality)
-  mcmc_params_provided <- (
-    !identical(n_iter, 2000) ||
-    !identical(n_burnin, 500) ||
-    !identical(n_chains, 2) ||
-    !identical(adapt_delta, 0.8)
-  )
+  # Validate backend argument
+  backend <- match.arg(backend, c("analytical", "stan", "nimble"))
 
-  if (mcmc_params_provided) {
-    warning(
-      "MCMC parameters (n_iter, n_burnin, n_chains, adapt_delta) are not used ",
-      "in the current analytical shrinkage implementation (geocoda v0.2.x). ",
-      "These parameters will be functional in geocoda v0.3.0 with true MCMC backends ",
-      "(Stan, Nimble, etc.). For now, only the shrinkage-based analytical method is used. ",
-      "Call gc_fit_hierarchical_model(data, prior_spec) to suppress this warning.",
-      call. = FALSE
-    )
-  }
-
-  if (!inherits(prior_spec, "gc_prior_spec")) {
-    stop("prior_spec must be an object of class 'gc_prior_spec'")
-  }
-  
-  if (!("zone" %in% names(data))) {
-    stop("data must contain a 'zone' column")
-  }
-  
-  hierarchy <- prior_spec$hierarchy
-  
-  # Extract ILR columns
-  ilr_cols <- grep("^ilr", names(data), value = TRUE)
-  if (length(ilr_cols) == 0) {
-    stop("data must contain ILR columns (ilr1, ilr2, ...)")
-  }
-  
-  if (length(ilr_cols) != hierarchy$n_components - 1) {
-    stop("Number of ILR columns does not match n_components - 1")
-  }
-  
-  n_obs <- nrow(data)
-  n_zones <- hierarchy$n_zones
-  n_ilr <- length(ilr_cols)
-  
-  if (verbose) {
-    cat("Fitting Hierarchical Shrinkage Model\n")
-    cat("  Observations:", n_obs, "\n")
-    cat("  Zones:", n_zones, "\n")
-    cat("  ILR dimensions:", n_ilr, "\n")
-    cat("  Method: Analytical shrinkage (empirical Bayes)\n")
-  }
-
-  # Prepare data for shrinkage estimation
-  zone_factor <- as.factor(data$zone)
-  y_matrix <- as.matrix(data[, ilr_cols, drop = FALSE])
-  
-  # Initialize zone-level summaries
-  zone_summaries <- list()
-  posterior_draws <- list()
-  
-  for (z in seq_along(hierarchy$zones)) {
-    zone_name <- hierarchy$zones[z]
-    zone_idx <- zone_factor == zone_name
-    
-    if (sum(zone_idx) == 0) {
-      if (verbose) {
-        cat("Warning: Zone", zone_name, "has no observations\n")
-      }
-      next
-    }
-    
-    y_zone <- y_matrix[zone_idx, , drop = FALSE]
-    n_z <- nrow(y_zone)
-    
-    # Compute zone posterior (conjugate updating)
-    zone_mean <- colMeans(y_zone, na.rm = TRUE)
-    zone_cov <- stats::cov(y_zone, use = "complete.obs")
-    
-    # Shrinkage toward global mean
-    shrinkage_coef <- prior_spec$pooling_coefficient
-    pooled_mean <- (1 - shrinkage_coef) * zone_mean + shrinkage_coef * prior_spec$global_mean
-    
-    # Posterior variance (reduced by sample size in zone)
-    posterior_var_scaling <- 1.0 / (1.0 + n_z * shrinkage_coef)
-    pooled_cov <- posterior_var_scaling * zone_cov
-    
-    # Simulate posterior samples
-    posterior_draws[[zone_name]] <- list(
-      n_obs = n_z,
-      mean = pooled_mean,
-      cov = pooled_cov,
-      sd = sqrt(diag(pooled_cov))
-    )
-    
-    # Compute credible intervals (95%)
-    ci_lower <- pooled_mean - 1.96 * sqrt(diag(pooled_cov))
-    ci_upper <- pooled_mean + 1.96 * sqrt(diag(pooled_cov))
-    
-    zone_summaries[[zone_name]] <- data.frame(
-      zone = zone_name,
-      ilr_dim = ilr_cols,
-      posterior_mean = pooled_mean,
-      posterior_sd = sqrt(diag(pooled_cov)),
-      ci_lower = ci_lower,
-      ci_upper = ci_upper,
-      n_obs = n_z,
-      shrinkage = shrinkage_coef,
-      stringsAsFactors = FALSE
-    )
-  }
-  
-  zone_summaries_df <- do.call(rbind, zone_summaries)
-  rownames(zone_summaries_df) <- NULL
-  
-  # Estimation quality metrics (not MCMC diagnostics)
-  n_ilr <- length(prior_spec$global_mean)
-  param_names <- names(prior_spec$global_mean)
-  if (is.null(param_names)) {
-    param_names <- paste0("ilr", seq_len(n_ilr))
-  }
-
-  # Summary of pooling across zones
-  zone_summary <- data.frame(
-    zone = names(posterior_draws),
-    n_obs = sapply(posterior_draws, function(x) x$n_obs),
-    shrinkage_strength = rep(prior_spec$pooling_coefficient, length(posterior_draws)),
-    stringsAsFactors = FALSE
-  )
-
-  # Prepare return object
-  fit <- list(
-    zone_estimates = posterior_draws,
-    global_estimates = list(
-      mean = prior_spec$global_mean,
-      cov = prior_spec$global_covariance
-    ),
-    shrinkage_weights = zone_summary,
-    zone_summaries = zone_summaries_df,
-    prior_spec = prior_spec,
-    metadata = list(
-      method = "analytical_shrinkage",
-      backend = "analytical",
-      fitted_zones = names(posterior_draws),
-      n_zones_fitted = length(posterior_draws),
-      n_obs_total = nrow(data),
-      pooling_coefficient = prior_spec$pooling_coefficient,
-      timestamp = Sys.time()
-    )
-  )
-
-  class(fit) <- c("gc_hierarchical_fit", "list")
-
-  if (verbose) {
-    cat("Hierarchical shrinkage model fitted successfully.\n")
-    cat("  Method: empirical Bayes shrinkage (analytical)\n")
-    cat("  Fitted zones:", fit$metadata$n_zones_fitted, "\n")
-    cat("  Total observations:", fit$metadata$n_obs_total, "\n")
-    cat("  Pooling strength:", fit$metadata$pooling_coefficient, "\n")
-    cat("  (For true Bayesian MCMC, use geocoda v0.3.0+)\n")
-  }
-  
-  fit
+  # Delegate to backend dispatcher
+  fit_hierarchical_backend(data, prior_spec, backend = backend, verbose = verbose)
 }
 
 

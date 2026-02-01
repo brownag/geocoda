@@ -33,4 +33,7 @@ Suggests:
     soilDB,
     testthat (>= 3.0.0),
     knitr,
-    rmarkdown
+    rmarkdown,
+    rstan (>= 2.26.0),
+    nimble (>= 0.13.0),
+    coda (>= 0.19-4)

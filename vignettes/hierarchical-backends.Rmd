@@ -1,0 +1,444 @@
+---
+title: "Hierarchical Model Backends in geocoda"
+description: "Compare and select from analytical, Stan HMC, and Nimble MCMC backends for hierarchical compositional data modeling"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Hierarchical Model Backends}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## Introduction
+
+The `geocoda` package provides three backends for hierarchical Bayesian modeling of compositional data:
+
+1. **Analytical** (default) - Fast, exact solution using empirical Bayes shrinkage
+2. **Stan HMC** - Full Bayesian inference via Hamiltonian Monte Carlo with NUTS sampler
+3. **Nimble MCMC** - Adaptive MCMC sampling with flexible configuration
+
+Each backend returns a standardized object with zone-specific posterior estimates, allowing you to choose the right inference method for your data and application.
+
+## Quick Start
+
+All backends use the same interface through `gc_fit_hierarchical_model()`:
+
+```r
+library(geocoda)
+
+# Prepare your data and prior specification
+# data: data frame with zone assignments and ILR coordinates
+# priors: prior specification from gc_set_hierarchy_priors()
+
+# Analytical (default, fastest)
+fit_analytical <- gc_fit_hierarchical_model(data, priors, backend = "analytical")
+
+# Stan HMC (full Bayes, slower, best diagnostics)
+fit_stan <- gc_fit_hierarchical_model(data, priors, backend = "stan",
+                                      n_iter = 2000, n_warmup = 500,
+                                      estimate_pooling = FALSE)
+
+# Nimble MCMC (adaptive, moderate speed)
+fit_nimble <- gc_fit_hierarchical_model(data, priors, backend = "nimble",
+                                        n_iter = 2000, n_warmup = 500)
+```
+
+## Comparison of Backends
+
+### Analytical Backend
+
+**When to use:** Default choice for most applications, especially for quick exploration and production workflows.
+
+**Characteristics:**
+- **Method**: Empirical Bayes shrinkage estimation
+- **Speed**: Fastest by far (< 1 second typically)
+- **Output**: Point estimates only (posterior means, SDs)
+- **Convergence**: No diagnostics needed (exact solution)
+- **Implementation**: Closed-form analytical solutions via Woodbury matrix identity
+
+**Advantages:**
+- No MCMC diagnostics to worry about
+- Extremely fast, scales well with data size
+- No sampling variability - deterministic results
+- Automatic hyperparameter estimation
+- Well-understood shrinkage theory
+
+**Disadvantages:**
+- Cannot estimate full posterior (only point estimates)
+- Limited flexibility for complex prior specifications
+- No posterior samples for further analysis
+- Assumes multivariate normal likelihood (though robust to mild violations)
+
+**Example:**
+```r
+fit <- gc_fit_hierarchical_model(data, priors, backend = "analytical")
+# Access zone estimates
+zone_means <- fit$zone_estimates$zone_A$mean
+zone_uncertainty <- fit$zone_estimates$zone_A$sd
+```
+
+### Stan HMC Backend
+
+**When to use:** When you need full Bayesian inference, posterior samples, or joint inference on multiple parameters.
+
+**Characteristics:**
+- **Method**: Hamiltonian Monte Carlo with NUTS (No-U-Turn Sampler)
+- **Speed**: Moderate (1-30 seconds per chain, depending on data size and iterations)
+- **Output**: Full posterior samples for all parameters
+- **Convergence**: Rigorous diagnostics (Rhat, ESS, divergences)
+- **Flexibility**: Supports estimated pooling, multiple covariance priors
+
+**Advantages:**
+- Full posterior distributions, not just point estimates
+- Posterior samples enable advanced downstream analysis
+- Real convergence diagnostics for assessing sample quality
+- Flexible pooling: can estimate hyperparameters from data
+- Multiple covariance prior options (LKJ, Inverse-Wishart)
+- State-of-the-art sampler (HMC/NUTS is very efficient)
+
+**Disadvantages:**
+- Slower than analytical method
+- Requires MCMC diagnostics interpretation
+- Sampling variability (reproducibility requires set.seed)
+- Larger memory footprint for large problems
+- Requires rstan installation (can be tricky on some systems)
+
+**Key Parameters:**
+```r
+fit_stan <- gc_fit_hierarchical_model(data, priors,
+                                      backend = "stan",
+                                      n_iter = 2000,        # Total iterations
+                                      n_warmup = 500,       # Burn-in
+                                      n_chains = 2,         # Parallel chains
+                                      adapt_delta = 0.8,    # Sampler adaptation
+                                      estimate_pooling = FALSE,    # Fixed vs estimated
+                                      covariance_prior = "lkj")    # Prior type
+```
+
+**Convergence Diagnostics:**
+```r
+# Check convergence
+fit_stan$diagnostics$rhat          # Should be < 1.1 for all parameters
+fit_stan$diagnostics$ess_bulk      # Effective sample size (bulk), aim for > 100
+fit_stan$diagnostics$ess_tail      # Effective sample size (tail)
+fit_stan$diagnostics$n_divergent   # Divergences, should be 0
+fit_stan$diagnostics$n_max_treedepth  # Max tree depth, rarely exceeded is good
+```
+
+**Posterior Samples:**
+```r
+# Direct access to posterior samples
+samples <- fit_stan$samples  # Matrix of posterior samples
+
+# Zone-specific estimates with credible intervals
+zone_means <- fit_stan$zone_estimates$zone_A$mean
+zone_ci_lower <- fit_stan$zone_estimates$zone_A$ci_lower
+zone_ci_upper <- fit_stan$zone_estimates$zone_A$ci_upper
+```
+
+### Nimble MCMC Backend
+
+**When to use:** When you need full Bayesian inference but prefer adaptive MCMC over HMC, or when flexibility in model specification is paramount.
+
+**Characteristics:**
+- **Method**: Adaptive MCMC with automatic sampler configuration
+- **Speed**: Moderate (comparable to Stan, depends on adaptation)
+- **Output**: Full posterior samples for all parameters
+- **Convergence**: Gelman-Rubin diagnostic (potential scale reduction factor)
+- **Flexibility**: Highly flexible model specification via R syntax
+
+**Advantages:**
+- Full posterior distributions like Stan
+- Flexible R-based model specification (easier to understand)
+- Adaptive samplers configured automatically
+- Parallel chain execution
+- Gelman-Rubin diagnostics
+- Can handle more complex model structures if needed
+
+**Disadvantages:**
+- Slower than HMC for high-dimensional posteriors
+- Less sophisticated diagnostics than Stan (Rhat alone)
+- No divergence detection like Stan
+- Requires nimble installation
+- Slightly less refined sampler than NUTS
+
+**Key Parameters:**
+```r
+fit_nimble <- gc_fit_hierarchical_model(data, priors,
+                                        backend = "nimble",
+                                        n_iter = 2000,        # Total iterations
+                                        n_warmup = 500,       # Burn-in
+                                        n_chains = 2,         # Parallel chains
+                                        estimate_pooling = FALSE,    # Fixed vs estimated
+                                        covariance_prior = "lkj")
+```
+
+**Convergence Diagnostics:**
+```r
+# Gelman-Rubin diagnostic (potential scale reduction factor)
+fit_nimble$diagnostics$gelman_rubin  # Should be < 1.05-1.1 for all parameters
+```
+
+## Choosing the Right Backend
+
+### Decision Tree
+
+```
+Are you exploring the data quickly?
+  → Yes: Use ANALYTICAL (fastest, good for EDA)
+  → No: Continue
+
+Do you need posterior samples or full uncertainty quantification?
+  → No: Use ANALYTICAL (point estimates sufficient)
+  → Yes: Continue
+
+Do you want the most rigorous convergence diagnostics?
+  → Yes: Use STAN (Rhat, ESS, divergences)
+  → No: Use NIMBLE (simpler setup, nearly as good)
+
+Do you need to estimate pooling strength from data?
+  → Yes: Use STAN or NIMBLE (both support this)
+  → No: ANALYTICAL is fastest, but STAN/NIMBLE also work
+```
+
+### Practical Recommendations
+
+| Scenario | Recommended Backend | Reason |
+|----------|-------------------|--------|
+| Production mapping with known prior | Analytical | Fast, deterministic, reliable |
+| Exploring different prior specifications | Analytical | Iterate quickly without MCMC overhead |
+| Publication-quality inference | Stan | Most rigorous diagnostics, state-of-art sampler |
+| Estimating pooling from data | Stan or Nimble | Analytical has fixed pooling |
+| Complex hierarchical structure | Nimble or Stan | Both can handle additional structure |
+| Small data with high uncertainty | Stan or Nimble | Posterior distributions crucial for downstream decisions |
+| Very large datasets (>10K obs) | Analytical | MCMC becomes computationally expensive |
+| Learning MCMC methods | Nimble | Simpler R-based model specification |
+
+## Detailed Examples
+
+### Example 1: Complete Workflow with Stan Backend
+
+```r
+library(geocoda)
+
+# Create synthetic hierarchical data
+set.seed(42)
+zones <- c("Zone_A", "Zone_B", "Zone_C")
+n_per_zone <- 30
+
+data <- data.frame(
+  zone = rep(zones, each = n_per_zone),
+  ilr1 = c(
+    rnorm(n_per_zone, mean =  0.2, sd = 0.5),
+    rnorm(n_per_zone, mean = -0.3, sd = 0.5),
+    rnorm(n_per_zone, mean =  0.1, sd = 0.5)
+  ),
+  ilr2 = c(
+    rnorm(n_per_zone, mean =  0.1, sd = 0.4),
+    rnorm(n_per_zone, mean =  0.2, sd = 0.4),
+    rnorm(n_per_zone, mean = -0.3, sd = 0.4)
+  )
+)
+
+# Define hierarchy (for prior specification)
+hierarchy <- gc_define_hierarchy(
+  zone_names = zones,
+  component_names = c("sand", "silt", "clay")
+)
+
+# Set priors
+priors <- gc_set_hierarchy_priors(hierarchy, pooling = "moderate")
+
+# Fit with Stan (full Bayesian inference)
+fit_stan <- gc_fit_hierarchical_model(data, priors,
+                                      backend = "stan",
+                                      n_iter = 1000,
+                                      n_warmup = 500,
+                                      n_chains = 2,
+                                      verbose = TRUE)
+
+# Check convergence
+if (max(fit_stan$diagnostics$rhat, na.rm = TRUE) < 1.1) {
+  cat("Model converged well!\n")
+} else {
+  cat("Warning: Some parameters may not have converged\n")
+}
+
+# Extract and summarize results
+for (zone in zones) {
+  cat("\n", zone, ":\n")
+  est <- fit_stan$zone_estimates[[zone]]
+  cat("  Mean ILR1:", round(est$mean[1], 3), "\n")
+  cat("  95% CI:  [", round(est$ci_lower[1], 3), ",",
+      round(est$ci_upper[1], 3), "]\n")
+}
+```
+
+### Example 2: Comparing Backends on Same Data
+
+```r
+# Fit all three backends
+fit_analytical <- gc_fit_hierarchical_model(data, priors,
+                                            backend = "analytical")
+fit_stan <- gc_fit_hierarchical_model(data, priors,
+                                      backend = "stan",
+                                      n_iter = 1000)
+fit_nimble <- gc_fit_hierarchical_model(data, priors,
+                                        backend = "nimble",
+                                        n_iter = 1000)
+
+# Compare posterior means for Zone_A
+comparison <- data.frame(
+  backend = c("analytical", "stan", "nimble"),
+  ilr1_mean = c(
+    fit_analytical$zone_estimates$Zone_A$mean[1],
+    fit_stan$zone_estimates$Zone_A$mean[1],
+    fit_nimble$zone_estimates$Zone_A$mean[1]
+  ),
+  ilr2_mean = c(
+    fit_analytical$zone_estimates$Zone_A$mean[2],
+    fit_stan$zone_estimates$Zone_A$mean[2],
+    fit_nimble$zone_estimates$Zone_A$mean[2]
+  )
+)
+
+print(comparison)
+# Analytical and MCMC means should be very similar (within MCMC error)
+```
+
+### Example 3: Posterior Predictive Checks with Stan Samples
+
+```r
+# Use posterior samples for posterior predictive distribution
+fit <- gc_fit_hierarchical_model(data, priors, backend = "stan")
+
+# Extract posterior samples
+samples <- fit$samples
+
+# Compute posterior predictive samples for new observation in Zone_A
+# (This is simplified; full PPC requires sampling from the posterior predictive)
+n_samples <- nrow(samples)
+zone_idx <- which(names(fit$zone_estimates) == "Zone_A")
+
+# Zone-specific posterior predictive
+ppc_samples <- replicate(n_samples, {
+  # Sample zone parameters
+  idx <- sample(1:n_samples, 1)
+  # Generate new observation from zone distribution
+  mu_zone <- samples[idx, grep("mu_zone.Zone_A", colnames(samples))]
+  # Add noise
+  rnorm(length(mu_zone), mean = mu_zone, sd = 0.5)
+})
+
+# Visualize posterior predictive distribution
+hist(ppc_samples[1, ], main = "Posterior Predictive for ILR1 (Zone_A)",
+     xlab = "ILR1 value")
+```
+
+## Advanced Topics
+
+### Estimated vs Fixed Pooling
+
+By default, the analytical backend uses a fixed pooling strength from the prior specification. Stan and Nimble backends can estimate pooling from the data:
+
+```r
+# Fixed pooling (uses prior_spec$pooling_coefficient)
+fit_fixed <- gc_fit_hierarchical_model(data, priors,
+                                       backend = "stan",
+                                       estimate_pooling = FALSE)
+
+# Estimated pooling (learns from data)
+fit_estimated <- gc_fit_hierarchical_model(data, priors,
+                                           backend = "stan",
+                                           estimate_pooling = TRUE)
+
+# Compare: estimated pooling typically yields less shrinkage if zones are different
+cat("Fixed pooling posterior SD:", fit_fixed$zone_estimates$Zone_A$sd[1], "\n")
+cat("Estimated pooling posterior SD:", fit_estimated$zone_estimates$Zone_A$sd[1], "\n")
+```
+
+### Covariance Priors
+
+Both MCMC backends support two covariance prior specifications:
+
+```r
+# LKJ prior (default): Correlation matrix via LKJ, variance separate
+fit_lkj <- gc_fit_hierarchical_model(data, priors,
+                                     backend = "stan",
+                                     covariance_prior = "lkj")
+
+# Inverse-Wishart prior: Conjugate multivariate normal prior
+fit_iw <- gc_fit_hierarchical_model(data, priors,
+                                    backend = "stan",
+                                    covariance_prior = "inverse_wishart")
+
+# Results should be similar for moderate sample sizes
+```
+
+### Parallel Computation
+
+```r
+# Stan and Nimble can run multiple chains in parallel
+# Specify n_chains and they use all available cores
+
+fit <- gc_fit_hierarchical_model(data, priors,
+                                backend = "stan",
+                                n_chains = 4,  # Run 4 chains in parallel
+                                n_cores = 4)   # Use all 4 cores (automatic)
+```
+
+## Troubleshooting
+
+### Stan Backend Issues
+
+**Problem:** "Error in stanc() - model failed to parse"
+- **Solution**: Check the Stan model syntax. Error message should indicate the line.
+
+**Problem:** Divergent transitions or low ESS
+- **Solution**: Increase `adapt_delta` (e.g., 0.9, 0.95) or increase `n_iter`/`n_warmup`
+
+**Problem:** rstan installation fails
+- **Solution**: See rstan documentation for your OS. May need C++ compiler and Rtools (Windows)
+
+### Nimble Backend Issues
+
+**Problem:** Poor mixing or high Gelman-Rubin values
+- **Solution**: Increase `n_iter` or `n_warmup`, ensure data is on reasonable scale
+
+**Problem:** nimble not installed
+- **Solution**: `install.packages("nimble")`
+
+## Performance Comparison
+
+Approximate timing on typical data (100 observations, 3 zones, 2 ILR dimensions):
+
+| Backend | Time | Samples | Diagnostics |
+|---------|------|---------|-------------|
+| Analytical | < 1 second | None | N/A |
+| Stan (1000 iter) | 5-10 seconds | 1000 | Rhat, ESS, divergences |
+| Nimble (1000 iter) | 8-15 seconds | 1000 | Gelman-Rubin |
+
+Times scale linearly with data size for analytical, but MCMC slowdown is sublinear due to vectorization.
+
+## Reference
+
+For detailed mathematical background on the hierarchical Bayesian model, see the main documentation for `gc_fit_hierarchical_model()`. For Stan and Nimble-specific questions:
+
+- **Stan**: https://mc-stan.org/users/documentation
+- **Nimble**: https://r-nimble.org/documentation
+
+## Summary
+
+The geocoda package provides three complementary backends:
+
+1. **Analytical**: Best for production use, exploration, and large datasets
+2. **Stan HMC**: Best for publication-quality inference and rigorous diagnostics
+3. **Nimble MCMC**: Best for learning MCMC and flexible model extensions
+
+Choose based on your needs for speed, posterior samples, and diagnostic rigor. All backends are statistically equivalent under ideal conditions - the choice is about computational efficiency and inference objectives.

@@ -257,7 +257,7 @@ test_that("gc_fit_hierarchical_model ignores unfitted zones gracefully", {
   expect_true("zone_1" %in% names(fit$zone_estimates))
 })
 
-test_that("gc_fit_hierarchical_model warns when MCMC parameters provided", {
+test_that("gc_fit_hierarchical_model defaults to analytical backend", {
   set.seed(333)
   data <- data.frame(
     zone = rep("zone_1", 20),
@@ -271,17 +271,9 @@ test_that("gc_fit_hierarchical_model warns when MCMC parameters provided", {
   )
 
   priors <- gc_set_hierarchy_priors(hierarchy, verbose = FALSE)
+  fit <- gc_fit_hierarchical_model(data, priors, verbose = FALSE)
 
-  # Should warn when providing non-default MCMC parameters
-  expect_warning(
-    gc_fit_hierarchical_model(data, priors, n_iter = 500, verbose = FALSE),
-    "MCMC parameters.*not used.*v0.3.0"
-  )
-
-  expect_warning(
-    gc_fit_hierarchical_model(data, priors, n_chains = 4, verbose = FALSE),
-    "MCMC parameters.*not used.*v0.3.0"
-  )
+  expect_equal(fit$metadata$backend, "analytical")
 })
 
 # ============================================================================

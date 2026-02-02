@@ -19,6 +19,8 @@ knitr::opts_chunk$set(
   fig.height = 6,
   dpi = 100
 )
+library(dplyr)
+library(tidyr)
 ```
 
 # Overview
@@ -40,18 +42,306 @@ Frequently asked questions and solutions for common issues when using geocoda fo
 ### Data Preparation
 
 **Q: "Compositional sum not equal to 100%"**
-- COMING: Troubleshooting guide for data quality checks
+
+This is the most common data quality issue in compositional data.
+
+```{r faq_compositional_sum}
+# Example compositional data (demonstration)
+soil_data <- data.frame(
+  sand = c(40, 45, 35, 50),
+  silt = c(35, 30, 40, 25),
+  clay = c(24, 25, 25, 24)  # Intentionally don't sum to exactly 100
+)
+
+# Diagnosis: Check compositional sums
+soil_data$total <- soil_data$sand + soil_data$silt + soil_data$clay
+cat("Compositional Sums:\n")
+print(soil_data$total)
+
+# How much deviation is acceptable?
+cat("\nDeviation from 100%:\n")
+cat("Mean:", round(mean(abs(soil_data$total - 100)), 4), "%\n")
+cat("Max:", round(max(abs(soil_data$total - 100)), 4), "%\n")
+cat("Proportion > 0.5%:", sum(abs(soil_data$total - 100) > 0.5) / nrow(soil_data), "\n\n")
+
+# Solutions by deviation size:
+cat("Guidance by deviation size:\n")
+cat("  < 0.1%: Rounding/measurement error → Ignore\n")
+cat("  0.1-1%: Acceptable → Normalize before analysis\n")
+cat("  > 1%:   Problematic → Investigate data source\n\n")
+
+# Fix: Closure operation (renormalize to 100%)
+soil_data_closed <- soil_data %>%
+  dplyr::mutate(
+    total = sand + silt + clay,
+    sand = 100 * sand / total,
+    silt = 100 * silt / total,
+    clay = 100 * clay / total
+  ) %>%
+  dplyr::select(-total)
+
+# Verify
+soil_data_closed$total <- rowSums(soil_data_closed[, c("sand", "silt", "clay")])
+cat("After closure - all sums = 100%?",
+    all(abs(soil_data_closed$total - 100) < 1e-6), "\n")
+cat("Closed data sums:", soil_data_closed$total, "\n")
+```
+
+**Common Causes & Solutions:**
+
+- **Lab rounding**: Sands/silts/clays rounded independently → Use closure
+- **Analytical error**: Lab reports sum to 99% or 101% → Normalize
+- **Data entry**: Typos, zeros entered as blanks → Check raw data
+- **Multiple determinations**: Different methods reported → Use most reliable
 
 **Q: "Too many zeros in my data"**
-- COMING: Zero handling strategies and imputation guidance
+
+Zeros in compositional data are problematic because log-ratio transformations require positive values.
+
+```{r faq_zero_handling}
+# Example data with some zeros (compositional)
+soil_with_zeros <- data.frame(
+  sand = c(40, 0, 35, 50, 0),
+  silt = c(35, 30, 0, 25, 45),
+  clay = c(25, 70, 65, 25, 0)
+)
+
+# Diagnosis: Count zeros
+soil_long <- tidyr::gather(soil_with_zeros,
+                           key = "component",
+                           value = "percentage",
+                           sand:clay)
+zero_count <- sum(soil_long$percentage == 0, na.rm = TRUE)
+cat("Total compositional entries:", nrow(soil_long), "\n")
+cat("Zeros:", zero_count, "(",
+    round(100 * zero_count / nrow(soil_long), 1), "%)\n\n")
+
+# By component
+cat("Zeros by component:\n")
+for (comp in c("sand", "silt", "clay")) {
+  zeros <- sum(soil_with_zeros[[comp]] == 0, na.rm = TRUE)
+  cat("  ", comp, ": ", zeros, " zeros (",
+      round(100 * zeros / nrow(soil_with_zeros), 1), "%)\n", sep="")
+}
+```
+
+**Solutions (by severity):**
+
+```{r zero_solutions}
+cat("Severity 1: Few zeros (< 5% of data)\n")
+cat("─────────────────────────────────────\n")
+cat("Option A: Additive replacement (simplest)\n")
+cat("  • Add 0.5 to all zeros\n")
+cat("  • Then re-normalize\n\n")
+
+# Additive replacement example
+soil_replaced <- soil_with_zeros
+soil_replaced[soil_replaced == 0] <- 0.5
+soil_replaced <- 100 * soil_replaced / rowSums(soil_replaced)
+cat("Example - after additive replacement:\n")
+print(soil_replaced)
+cat("\n")
+
+cat("Option B: Multiplicative replacement\n")
+cat("  • Add α × DL where α=0.65, DL=detection limit\n")
+cat("  • Usually DL ~ 0.1-0.2% for lab texture analysis\n\n")
+
+cat("Severity 2: Moderate zeros (5-20%)\n")
+cat("──────────────────────────────────\n")
+cat("Use zCompositions package for EM imputation:\n")
+cat("  zCompositions::cmultRepl(data, method='KNN')\n")
+cat("  Replaces zeros with values estimated from\n")
+cat("  nearby observations\n\n")
+
+cat("Severity 3: Many zeros (> 20%)\n")
+cat("────────────────────────────────\n")
+cat("STOP: Data quality issue\n")
+cat("Investigate:\n")
+cat("  • Are zeros real (bedrock, gravel)?
+                    (measurement errors?\n")
+cat("  • Laboratory detection limits?\n")
+cat("  • Missing values coded as zero?\n")
+cat("  • Do zeros follow spatial pattern?\n")
+cat("If real: Consider separate analysis for\n")
+cat("         compositions where component > threshold\n")
+```
 
 **Q: "Warnings about sparse data"**
-- COMING: Bootstrap resampling and edge extension techniques
+
+Sparse data creates artificial boundaries and uncertain estimates at domain edges.
+
+```{r faq_sparse_data}
+# Example: Sample distribution assessment
+cat("Sample Distribution Analysis\n")
+cat("===========================\n\n")
+
+# Create example sparse spatial dataset
+sparse_samples <- data.frame(
+  x = c(0, 100, 200, 500, 5000, 9800, 9900),  # Clustered with gap
+  y = c(0, 50, 100, 200, 5000, 100, 9900),
+  sand = c(40, 42, 38, 45, 50, 55, 60)
+)
+
+# Spatial distribution
+cat("Study area extent:\n")
+cat("  X range:", min(sparse_samples$x), "to", max(sparse_samples$x), "\n")
+cat("  Y range:", min(sparse_samples$y), "to", max(sparse_samples$y), "\n")
+area <- (max(sparse_samples$x) - min(sparse_samples$x)) *
+        (max(sparse_samples$y) - min(sparse_samples$y))
+cat("  Total area:", round(area, 0), "sq units\n")
+
+# Sample density
+cat("\nSample density:\n")
+n_samples <- nrow(sparse_samples)
+density <- n_samples / area
+cat("  Sample count:", n_samples, "\n")
+cat("  Samples per 1,000,000 sq units:",
+    round(density * 1e6, 2), "\n")
+cat("  Average inter-sample distance:",
+    round(1 / sqrt(density), 0), "units\n")
+
+# Spatial coverage
+cat("\nSpatial coverage assessment:\n")
+x_range <- max(sparse_samples$x) - min(sparse_samples$x)
+y_range <- max(sparse_samples$y) - min(sparse_samples$y)
+edge_dist <- 0.1 * max(x_range, y_range)
+
+samples_at_edges <- sum(
+  abs(sparse_samples$x - min(sparse_samples$x)) < edge_dist |
+  abs(sparse_samples$x - max(sparse_samples$x)) < edge_dist |
+  abs(sparse_samples$y - min(sparse_samples$y)) < edge_dist |
+  abs(sparse_samples$y - max(sparse_samples$y)) < edge_dist
+)
+cat("  Samples within 10% of domain edge:", samples_at_edges, "\n")
+cat("  Gap detection: Large gap between x=200 and x=5000\n")
+```
+
+**Solutions:**
+
+```{r sparse_solutions}
+cat("Strategy 1: Add edge samples (preferred)\n")
+cat("──────────────────────────────────────\n")
+cat("• Collect additional samples along domain edges\n")
+cat("• Fill large spatial gaps if possible\n")
+cat("• Even 2-3 edge samples dramatically improve\n")
+cat("  uncertainty quantification\n\n")
+
+cat("Strategy 2: Edge effect management\n")
+cat("──────────────────────────────────\n")
+cat("• Restrict predictions to inner domain\n")
+cat("  (exclude 1-2× range from edges)\n")
+cat("• Increase nmax at edges (use more neighbors)\n")
+cat("• Report higher uncertainty at edges\n\n")
+
+cat("Strategy 3: Bootstrap resampling\n")
+cat("────────────────────────────────\n")
+cat("Quantify uncertainty from sampling:\n")
+cat("  For i in 1:n_bootstrap {\n")
+cat("    sample_i <- sample(data, replace=TRUE)\n")
+cat("    vgm_i <- gc_fit_vgm(sample_i, ...)\n")
+cat("    sim_i <- gc_sim_composition(...)\n")
+cat("  }\n")
+cat("  Result: Ensemble of realizations\n")
+cat("          accounting for sampling variability\n\n")
+
+cat("Strategy 4: Bayesian priors\n")
+cat("──────────────────────────\n")
+cat("Use informative priors from:\n")
+cat("  • Regional background values (SSURGO)\n")
+cat("  • Domain knowledge of soil genesis\n")
+cat("  • Parent material expectations\n")
+cat("Priors shrink unrealistic edge predictions\n")
+```
 
 ### Variogram Modeling
 
 **Q: "Variogram fitting failed"**
-- COMING: Variogram fitting diagnostics and debugging
+
+Common failure points in variogram fitting and solutions.
+
+```{r faq_variogram_fitting}
+cat("Variogram Fitting Diagnostics\n")
+cat("=============================\n\n")
+
+cat("Common Errors and Meanings:\n")
+cat("✗ 'sill < nugget':           Variogram model invalid\n")
+cat("✗ 'Non-positive parameters': Covariance not positive definite\n")
+cat("✗ 'No convergence':          Optimization failed\n")
+cat("✗ 'Unbounded':               Variogram keeps increasing\n\n")
+
+cat("Diagnostic Workflow:\n")
+cat("─────────────────────\n\n")
+
+cat("Step 1: CHECK EMPIRICAL VARIOGRAM\n")
+cat("• Compute empirical variogram from data\n")
+cat("• Plot it visually\n")
+cat("• Does it have expected exponential/spherical shape?\n")
+cat("• Does it level off at a sill?\n")
+cat("• Or does it keep increasing (unbounded)?\n\n")
+
+cat("Step 2: FIT MODEL TO EMPIRICAL VGM\n")
+cat("• Choose initial guess for parameters\n")
+cat("• psill (partial sill) = ~90% of data variance\n")
+cat("• nugget = ~10% of data variance\n")
+cat("• range = domain_diagonal / 3\n\n")
+
+cat("Step 3: CAPTURE ERRORS\n")
+cat("code_example <- tryCatch(\n")
+cat("  gstat::fit.variogram(empirical_vgm, initial_model),\n")
+cat("  error = function(e) {\n")
+cat("    cat('Fit failed:', conditionMessage(e), '\n')\n")
+cat("    return(NULL)\n")
+cat("  }\n")
+cat(")\n\n")
+
+cat("Step 4: INTERPRET FAILURES\n")
+cat("• If fit=NULL: Try different initial guess\n")
+cat("• If unbounded: Data may be non-stationary\n")
+cat("• If singular: Reduce parameters or add regularization\n")
+```
+
+**Solutions by Error Type:**
+
+```{r vgm_fixes}
+cat("Error: 'sill must be > nugget'\n")
+cat("───────────────────────────────\n")
+cat("Cause: Model trying to fit invalid parameters\n")
+cat("Fix:\n")
+cat("  1. Start with better initial guess\n")
+cat("     vgm_init <- gstat::vgm(\n")
+cat("       psill = var(data), # Use empirical variance\n")
+cat("       model = 'Exp',\n")
+cat("       range = domain_diagonal/3,\n")
+cat("       nugget = 0.05 * var(data)  # 5% of variance\n")
+cat("     )\n")
+cat("  2. Or fix problematic parameters:\n")
+cat("     vgm_fit <- gstat::fit.variogram(\n")
+cat("       empirical,\n")
+cat("       vgm_init,\n")
+cat("       fit.method = 3  # Levenberg-Marquardt\n")
+cat("     )\n\n")
+
+cat("Error: 'No convergence'\n")
+cat("───────────────────────\n")
+cat("Cause: Optimization didn't find good fit\n")
+cat("Solutions:\n")
+cat("  1. Try different model type ('Sph', 'Gau')\n")
+cat("  2. Increase max iterations\n")
+cat("  3. Use weighted fit to down-weight far points\n\n")
+
+cat("Error: 'Data unbounded' (monotonic increase)\n")
+cat("──────────────────────────────────────────\n")
+cat("Cause: Variogram never levels off\n")
+cat("Indicates:\n")
+cat("  • Non-stationary spatial process\n")
+cat("  • Insufficient data at large distances\n")
+cat("  • Long-range trend in data\n")
+cat("Solutions:\n")
+cat("  1. Detrend data (remove mean spatial trend)\n")
+cat("  2. Limit variogram range to avoid far distances\n")
+cat("  3. Fit more flexible model (power variogram)\n")
+cat("  4. Separate domain into stationary zones\n")
+```
 
 **Q: "Which range parameter should I use?"**
 - See Vignette 06: Parameter Selection Guide
@@ -59,10 +349,180 @@ Frequently asked questions and solutions for common issues when using geocoda fo
 ### Simulation & Constraints
 
 **Q: "Simulations violate compositional constraints"**
-- COMING: Constraint validation and enforcement troubleshooting
+
+Properly implemented ILR transformations should always satisfy constraints. If violations occur, there's a systematic issue.
+
+```{r faq_constraint_violations}
+# Constraint Satisfaction Diagnostics
+# Example: Simulated compositional data
+
+cat("Constraint Check Procedure\n")
+cat("=========================\n\n")
+
+# Create demo simulated data (3 realizations × 100 grid cells)
+sims_demo <- data.frame(
+  SAND.sim1 = rnorm(100, 40, 10),
+  SILT.sim1 = rnorm(100, 35, 8),
+  CLAY.sim1 = rnorm(100, 25, 7),
+  SAND.sim2 = rnorm(100, 40, 10),
+  SILT.sim2 = rnorm(100, 35, 8),
+  CLAY.sim2 = rnorm(100, 25, 7),
+  SAND.sim3 = rnorm(100, 40, 10),
+  SILT.sim3 = rnorm(100, 35, 8),
+  CLAY.sim3 = rnorm(100, 25, 7)
+)
+
+cat("CHECK 1: Compositional Sum (should all = 100%)\n")
+cat("──────────────────────────────────────────\n")
+for (i in 1:3) {
+  sand <- sims_demo[[paste0("SAND.sim", i)]]
+  silt <- sims_demo[[paste0("SILT.sim", i)]]
+  clay <- sims_demo[[paste0("CLAY.sim", i)]]
+  total <- sand + silt + clay
+
+  violations <- sum(abs(total - 100) > 0.01)
+  cat("  Sim", i, ":", violations, "sum violations (",
+      round(100 * violations / length(total), 1), "%)\n", sep="")
+}
+
+cat("\nCHECK 2: Non-negativity (all values >= 0)\n")
+cat("────────────────────────────────────────\n")
+for (comp in c("SAND", "SILT", "CLAY")) {
+  cols <- grep(paste0("^", comp), names(sims_demo), value=TRUE)
+  neg_count <- sum(rowSums(sims_demo[, cols] < 0, na.rm=TRUE) > 0)
+  cat("  ", comp, ":", neg_count, "negative violations\n", sep="")
+}
+
+cat("\nCHECK 3: Physical Bounds (0-100% each)\n")
+cat("────────────────────────────────────\n")
+for (comp in c("SAND", "SILT", "CLAY")) {
+  cols <- grep(paste0("^", comp), names(sims_demo), value=TRUE)
+  vals <- as.matrix(sims_demo[, cols])
+  violations <- sum(vals < 0 | vals > 100, na.rm=TRUE)
+  cat("  ", comp, ":", violations, "bound violations\n", sep="")
+}
+
+cat("\nDiagnostic Workflow:\n")
+cat("1. Run simulations\n")
+cat("2. Check each constraint above\n")
+cat("3. If violations found, investigate root cause\n")
+cat("4. Review model specification and input data\n")
+```
+
+**If Violations Found:**
+
+```{r constraint_fixes}
+cat("Cause 1: ILR transformation error\n")
+cat("────────────────────────────────\n")
+cat("Check: Are ILR columns being computed correctly?\n")
+cat("  ilr_params <- gc_ilr_params(raw_data)\n")
+cat("  # Verify ilr_params$cov is positive definite\n")
+cat("  eigen(ilr_params$cov)$values  # Should all be > 0\n")
+cat("Fix: Ensure no singular covariance matrices\n\n")
+
+cat("Cause 2: Simulation grid outside valid domain\n")
+cat("──────────────────────────────────────────\n")
+cat("Check: Are grid locations reasonable?\n")
+cat("  grid_range <- apply(grid_coords, 2, range)\n")
+cat("  data_range <- apply(data_coords, 2, range)\n")
+cat("  all(grid_range[1,] >= data_range[1,] &\n")
+cat("      grid_range[2,] <= data_range[2,])?\n")
+cat("Fix: Restrict predictions to data convex hull\n\n")
+
+cat("Cause 3: Overly smooth kriging\n")
+cat("──────────────────────────────\n")
+cat("Check: Are predictions unrealistic?\n")
+cat("  quantile(sims, c(0.25, 0.5, 0.75))\n")
+cat("  # Compare to observed data quantiles\n")
+cat("Fix: Increase nugget (more realistic variability)\n\n")
+
+cat("Cause 4: Back-transformation numerical error\n")
+cat("──────────────────────────────────────────\n")
+cat("Check: Very small violations (< 0.001%)?\n")
+cat("Fix: Apply forced closure after back-transform:\n")
+cat("  sims_closed <- sweep(sims, 1, MARGIN=1,\n")
+cat("                       rowSums(sims),\n")
+cat("                       \"/\") * 100\n")
+```
 
 **Q: "Predictions look unrealistic"**
-- COMING: Validation checklist and sensitivity analysis
+
+Unrealistic predictions usually indicate model misspecification or poor data quality.
+
+```{r faq_unrealistic_predictions}
+cat("Prediction Validation Checklist\n")
+cat("==============================\n\n")
+
+cat("CHECK 1: Compare statistics to observations\n")
+cat("──────────────────────────────────────────\n")
+cat("Compare predicted vs observed:\n")
+cat("  Predicted mean SAND: 40.2%\n")
+cat("  Observed mean SAND:  40.5%\n")
+cat("  Difference: 0.3% ✓ (acceptable)\n\n")
+
+cat("If difference > 10%:\n")
+cat("  ✗ Check variogram fitting\n")
+cat("  ✗ Check prior specification\n")
+cat("  ✗ Check for data quality issues\n\n")
+
+cat("CHECK 2: Variability reproduction\n")
+cat("────────────────────────────────\n")
+cat("Compare predicted vs observed:\n")
+cat("  Predicted SD SAND: 9.5%\n")
+cat("  Observed SD SAND:  10.2%\n")
+cat("  Ratio: 0.93 ✓ (within 10%)\n\n")
+
+cat("If ratio < 0.7 or > 1.5:\n")
+cat("  ✗ Nugget too high or too low\n")
+cat("  ✗ Range parameter misspecified\n\n")
+
+cat("CHECK 3: Visual inspection of maps\n")
+cat("───────────────────────────────────\n")
+cat("Look for:\n")
+cat("  ✓ Appropriate smoothness (matches variogram)\n")
+cat("  ✓ Spatial patterns reflect observations\n")
+cat("  ✗ Smooth everywhere? → Nugget too high\n")
+cat("  ✗ Checkerboard noise? → Nugget too low\n")
+cat("  ✗ Unrealistic extremes? → Model misspecified\n\n")
+
+cat("CHECK 4: Cross-validation assessment\n")
+cat("────────────────────────────────────\n")
+cat("Leave-one-out validation procedure:\n")
+cat("  1. Remove observation i\n")
+cat("  2. Predict at location i\n")
+cat("  3. Compare to actual value\n")
+cat("  4. Repeat for all observations\n")
+cat("  5. Compute RMSE, MAE, and coverage\n\n")
+
+cat("Good performance:\n")
+cat("  • RMSE < observed SD\n")
+cat("  • 85-95% of obs in 95% prediction interval\n")
+cat("  • No systematic bias (predictions don't trend high/low)\n")
+```
+
+**Common Issues & Fixes:**
+
+```{r prediction_fixes}
+cat("Issue: Predictions all same value (flat map)\n")
+cat("─────────────────────────────────────────\n")
+cat("Cause: Nugget = 100% (no spatial signal)\n")
+cat("Fix: Check variogram fitting\n")
+cat("     Reduce nugget if data quality allows\n\n")
+
+cat("Issue: Extreme predictions (negative or > 100%)\n")
+cat("──────────────────────────────────────────\n")
+cat("Cause: Poor kriging neighborhood, bad variogram\n")
+cat("Fix: Increase nmax (use more neighbors)\n")
+cat("     OR use local kriging (smaller regions)\n\n")
+
+cat("Issue: Predictions don't match observations\n")
+cat("────────────────────────────────────────\n")
+cat("Cause: Variogram misspecified or data error\n")
+cat("Fix: 1. Check data quality (sum to 100%?)\n")
+cat("     2. Re-fit variogram\n")
+cat("     3. Use external drift (if available)\n")
+cat("     4. Split domain into zones\n")
+```
 
 ### Hierarchical Models
 
@@ -70,10 +530,134 @@ Frequently asked questions and solutions for common issues when using geocoda fo
 - See Vignette 03: Hierarchical Modeling for backend comparison
 
 **Q: "Shrinkage weights don't look right"**
-- COMING: Interpreting and tuning shrinkage parameters
+
+Shrinkage strength should be data-dependent. Poor weights indicate inappropriate pooling.
+
+```{r faq_shrinkage}
+cat("Shrinkage Weight Interpretation\n")
+cat("===============================\n\n")
+
+cat("Formula: Shrinkage Weight = n / (n + τ²)\n")
+cat("where:\n")
+cat("  n = number of samples in zone\n")
+cat("  τ² = pooling variance parameter\n\n")
+
+cat("Interpretation:\n")
+cat("  w → 1.0:   Zone-specific (data-driven)\n")
+cat("  w → 0.5:   Balanced (data + prior equally weighted)\n")
+cat("  w → 0.0:   Global prior (strong pooling)\n\n")
+
+# Example: Compute shrinkage weights for different sample sizes
+tau_sq <- 10  # Pooling variance
+
+# Different zone sample sizes
+n_samples <- c(5, 10, 20, 50, 100)
+weights <- n_samples / (n_samples + tau_sq)
+
+example_weights <- data.frame(
+  Zone = 1:length(n_samples),
+  n_samples = n_samples,
+  tau_sq = tau_sq,
+  shrinkage_weight = round(weights, 3),
+  interpretation = c("Strong pooling", "Strong pooling",
+                      "Moderate pooling", "Weak pooling",
+                      "Data-driven")
+)
+
+cat("Example Shrinkage Weights (τ² = 10):\n")
+print(example_weights)
+
+cat("\nInterpretation:\n")
+cat("• Small zones (n=5): w=0.33, heavily pooled toward global mean\n")
+cat("• Medium zones (n=20): w=0.67, moderately pooled\n")
+cat("• Large zones (n=100): w=0.91, mostly zone-specific\n")
+```
 
 **Q: "MCMC chains not converging"**
-- COMING: Stan/Nimble convergence diagnostics and debugging
+
+Non-convergence means posterior samples are unreliable. Multiple troubleshooting steps needed.
+
+```{r faq_mcmc_convergence}
+# MCMC Convergence Diagnostics
+# Extract and interpret convergence metrics
+
+cat("STEP 1: Check Rhat (Potential Scale Reduction Factor)\n")
+cat("───────────────────────────────────────────────────\n")
+cat("Rhat measures: Convergence of multiple chains\n\n")
+
+cat("Example diagnostics:\n")
+example_rhat <- data.frame(
+  Parameter = c("mu_global[1]", "mu_zone[1]", "mu_zone[2]", "tau_pooling", "sigma[1]"),
+  Rhat = c(1.00, 1.03, 1.08, 1.15, 1.01),
+  Status = c("✓ OK", "✓ OK", "✓ OK", "✗ PROBLEM", "✓ OK")
+)
+print(example_rhat)
+
+cat("\nInterpretation:\n")
+cat("  Rhat < 1.05: Excellent convergence\n")
+cat("  1.05-1.1:    Acceptable, run longer if time permits\n")
+cat("  > 1.1:       Poor convergence, must investigate\n\n")
+
+cat("STEP 2: Check Effective Sample Size (ESS)\n")
+cat("─────────────────────────────────────────\n")
+cat("ESS = useful samples after accounting for autocorrelation\n\n")
+
+cat("Example ESS values (2 chains, 1000 iterations each):\n")
+example_ess <- data.frame(
+  Parameter = c("mu_global[1]", "mu_zone[1]", "tau_pooling"),
+  ESS_bulk = c(1800, 950, 120),
+  ESS_tail = c(1600, 850, 110),
+  Interpretation = c("Excellent", "Good", "Marginal")
+)
+print(example_ess)
+
+cat("\nTarget ESS:\n")
+cat("  ESS > 400: Excellent (no action)\n")
+cat("  ESS 100-400: Acceptable\n")
+cat("  ESS < 100: Run longer chains\n\n")
+
+cat("STEP 3: Check for Divergent Transitions\n")
+cat("───────────────────────────────────────\n")
+cat("Divergences = HMC numerical instability\n")
+cat("Example:\n")
+cat("  2 chains × 1000 iterations = 2000 draws\n")
+cat("  Divergences: 15 (0.75% of draws)\n")
+cat("  Status: Acceptable (< 5%)\n")
+cat("  Action: If > 5%, increase adapt_delta\n")
+```
+
+**Solutions by Diagnosis:**
+
+```{r mcmc_solutions}
+cat("Solution 1: Increase iterations\n")
+cat("───────────────────────────────\n")
+cat("Symptom: Rhat > 1.1\n")
+cat("Try: Double iterations (4000 vs 2000)\n")
+cat("     Increase warmup (1000 vs 500)\n")
+cat("     Run multiple chains (4 vs 2)\n\n")
+
+cat("Solution 2: Reparameterize (non-centered)\n")
+cat("────────────────────────────────────────\n")
+cat("Symptom: Rhat problems with random effects\n")
+cat("Issue: Centered parameterization creates\n")
+cat("       dependencies between parameters\n")
+cat("Fix: Use non-centered param (already in\n")
+cat("     geocoda Stan models by default)\n\n")
+
+cat("Solution 3: Increase adapt_delta\n")
+cat("──────────────────────────────────\n")
+cat("Symptom: Divergent transitions\n")
+cat("Try: adapt_delta = 0.85, then 0.9, then 0.95\n")
+cat("     (slower but more careful exploration)\n\n")
+
+cat("Solution 4: Simplify model\n")
+cat("─────────────────────────\n")
+cat("If still failing:\n")
+cat("  1. Use analytical backend first\n")
+cat("  2. Fix any data quality issues\n")
+cat("  3. Check prior specification\n")
+cat("  4. Consider data transformation\n")
+```
 
 ### Risk Assessment
 
@@ -81,50 +665,280 @@ Frequently asked questions and solutions for common issues when using geocoda fo
 - See Vignette 02: Ensemble Analysis & Risk Assessment
 
 **Q: "What loss function should I use?"**
-- COMING: Loss function selection for different scenarios
+
+Loss functions encode your risk tolerance. Different scenarios require different costs.
+
+```{r faq_loss_functions}
+cat("Loss Function Selection by Scenario\n")
+cat("===================================\n\n")
+
+cat("Scenario 1: CARBON CREDITS (Cost of Error)\n")
+cat("──────────────────────────────────────────\n")
+cat("Over-crediting (false positive):     Cost = 2-3×\n")
+cat("Under-crediting (false negative):    Cost = 1×\n")
+cat("Rationale: Financial exposure from\n")
+cat("           crediting undeserving locations\n\n")
+
+cat("loss <- function(p, a=2.5, b=1) {\n")
+cat("  (1-p) * a + p * b  # Expected loss\n")
+cat("}\n")
+cat("threshold <- optim(p=0.5, loss)$par\n")
+cat("# Typically threshold > 0.5 (more conservative)\n\n")
+
+cat("Scenario 2: CONTAMINATION REMEDIATION\n")
+cat("─────────────────────────────────────\n")
+cat("False negative (miss contamination): Cost = 3-5×\n")
+cat("False positive (over-remediate):     Cost = 1×\n")
+cat("Rationale: Health risk outweighs\n")
+cat("           over-treatment costs\n\n")
+
+cat("loss <- function(p, a=1, b=4) {\n")
+cat("  (1-p) * a + p * b  # Expected loss\n")
+cat("}\n")
+cat("# Threshold < 0.5 (more aggressive)\n\n")
+
+cat("Scenario 3: AGRICULTURAL YIELD\n")
+cat("────────────────────────────────\n")
+cat("False prediction of low yield: Cost = 1×\n")
+cat("False prediction of high yield: Cost = 1×\n")
+cat("Symmetric loss (use P(yield > threshold) ≈ 0.5)\n\n")
+
+cat("Scenario 4: REGULATORY COMPLIANCE\n")
+cat("─────────────────────────────────\n")
+cat("Depends on legal framework:\n")
+cat("  • Zero-risk mandate: Cost FALSE_NEG = ∞\n")
+cat("  • Cost-benefit analysis: Use agency guidance\n")
+cat("  • Burden-of-proof: affects threshold shift\n")
+```
 
 ## Common Error Messages
 
-```{r error_messages, eval=FALSE}
-# COMING: Comprehensive error troubleshooting guide
+```{r error_messages}
+cat("Error: 'object ... not found'\n")
+cat("────────────────────────────\n")
+cat("Cause: Variable name typo or not created\n")
+cat("Check:\n")
+cat("  1. Exact spelling: ls() lists all objects\n")
+cat("  2. Loaded package: library(geocoda) run?\n")
+cat("  3. Previous step: Did fit <- gc_fit_vgm() work?\n\n")
 
-# Error 1: "object ... not found"
-# Solution: ...
+cat("Error: 'Invalid CRS' or 'CRS mismatch'\n")
+cat("──────────────────────────────────────\n")
+cat("Cause: Coordinate systems don't match\n")
+cat("Fix:\n")
+cat("  data_sf <- sf::st_as_sf(data, coords=c('x','y'))\n")
+cat("  sf::st_crs(data_sf) <- 4326  # Set to EPSG:4326\n")
+cat("  # Ensure all sf objects use same CRS\n")
+cat("  grid_sf <- sf::st_transform(grid_sf,\n")
+cat("                              sf::st_crs(data_sf))\n\n")
 
-# Error 2: "Invalid CRS"
-# Solution: ...
+cat("Error: 'Dimension mismatch' in rbind/bind_rows\n")
+cat("──────────────────────────────────────────────\n")
+cat("Cause: Column names or types don't match\n")
+cat("Fix:\n")
+cat("  names(data1)  # Check column names\n")
+cat("  names(data2)\n")
+cat("  # Ensure same columns in same order\n")
+cat("  data_combined <- dplyr::bind_rows(data1, data2)\n\n")
 
-# Error 3: "Dimension mismatch"
-# Solution: ...
+cat("Error: 'Non-conformable arrays' in matrix ops\n")
+cat("──────────────────────────────────────────\n")
+cat("Cause: Matrix dimensions don't align for operation\n")
+cat("Fix:\n")
+cat("  dim(ilr_coords)  # Should be N × D\n")
+cat("  dim(covariance)  # Should be D × D\n")
+cat("  # Verify shapes before multiplication\n\n")
+
+cat("Error: 'No finite argument' in stats function\n")
+cat("───────────────────────────────────────────\n")
+cat("Cause: All data are NA or NULL\n")
+cat("Fix:\n")
+cat("  sum(is.na(data$SAND))  # Count NAs\n")
+cat("  # Remove NAs before analysis\n")
+cat("  data_clean <- na.omit(data)\n")
 ```
 
 ## Performance Optimization
 
-```{r performance_tips, eval=FALSE}
-# COMING: Performance optimization guidelines
+```{r performance_tips}
+cat("Performance Optimization Strategy\n")
+cat("=================================\n\n")
 
-# Tip 1: Reduce grid resolution for exploratory analysis
-# Tip 2: Use analytical backend for initial fitting
-# Tip 3: Parallelize multiple realizations
-# Tip 4: Cache variogram fits
+cat("Tip 1: Exploratory Phase (Fast Iteration)\n")
+cat("─────────────────────────────────────────\n")
+cat("Use:\n")
+cat("  • Analytical backend (< 1 second)\n")
+cat("  • Coarse grid (every 5-10 pixels)\n")
+cat("  • Subset of data if > 1000 points\n")
+cat("  • Reduce kriging neighbors (nmax=5)\n")
+cat("Result: Parameters refined in minutes\n\n")
+
+cat("Tip 2: Scale Up Gradually\n")
+cat("────────────────────────\n")
+cat("10 samples → 100 samples → 1000 samples\n")
+cat("100×100 grid → 500×500 → 1000×1000\n")
+cat("Identify bottlenecks at each step\n\n")
+
+cat("Tip 3: Parallelize Simulations\n")
+cat("──────────────────────────────\n")
+cat("library(parallel)\n")
+cat("cl <- makeCluster(detectCores()-1)\n")
+cat("# Multiple realizations can run in parallel\n")
+cat("sims <- parLapply(cl, 1:100, function(i) {\n")
+cat("  gc_sim_composition(model, grid, nsim=1)\n")
+cat("})\n\n")
+
+cat("Tip 4: Cache Expensive Operations\n")
+cat("────────────────────────────────\n")
+cat("# Save fitted variogram\n")
+cat("saveRDS(vgm_fit, 'variogram_fitted.rds')\n")
+cat("vgm_fit <- readRDS('variogram_fitted.rds')\n")
+cat("# Avoid re-fitting on every run\n\n")
+
+cat("Tip 5: Control Memory Usage\n")
+cat("───────────────────────────\n")
+cat("# Use block support for large grids\n")
+cat("sims_block <- gc_sim_composition_block(\n")
+cat("  model, blocks,\n")
+cat("  block_size = c(1000, 1000),\n")
+cat("  discretization = c(2, 2)  # Coarse\n")
+cat(")\n")
+cat("# 2×2 discretization uses 4× less memory\n\n")
+
+cat("Expected Runtimes (rough estimates)\n")
+cat("───────────────────────────────────\n")
+cat("Small (50 samples, 10×10 grid):\n")
+cat("  Analytical: < 0.1 sec\n")
+cat("  Stan: 10-30 sec\n")
+cat("  Nimble: 5-15 sec\n\n")
+
+cat("Medium (200 samples, 100×100 grid):\n")
+cat("  Analytical: < 0.1 sec\n")
+cat("  Stan: 30-60 sec\n")
+cat("  Nimble: 15-30 sec\n\n")
+
+cat("Large (1000 samples, 500×500 grid):\n")
+cat("  Analytical: < 1 sec\n")
+cat("  Stan: 2-5 min\n")
+cat("  Nimble: 1-3 min\n")
 ```
 
 ## Validation Workflows
 
-```{r validation_checklist, eval=FALSE}
-# COMING: Pre-simulation and post-simulation validation checklists
+### Pre-Simulation Validation Checklist
 
-# Pre-simulation checks:
-# - Compositional constraint satisfaction
-# - Spatial coverage adequacy
-# - Outlier detection
-# - Stationarity assessment
+```{r validation_checklist}
+cat("PRE-SIMULATION VALIDATION\n")
+cat("=========================\n\n")
 
-# Post-simulation checks:
-# - Constraint satisfaction in realizations
-# - Statistical reproduction (mean, variance, spatial structure)
-# - Visual plausibility assessment
-# - Comparison with input observations
+cat("☐ 1. Data Quality\n")
+cat("─────────────────\n")
+cat("Check: Compositional sums\n")
+cat("  sum_check <- rowSums(data[, c('SAND', 'SILT', 'CLAY')])\n")
+cat("  all(abs(sum_check - 100) < 0.1)  # Should be TRUE\n\n")
+
+cat("Check: No negative values\n")
+cat("  all(data[, c('SAND', 'SILT', 'CLAY')] >= 0)  # TRUE\n\n")
+
+cat("Check: Reasonable ranges\n")
+cat("  summary(data[, c('SAND', 'SILT', 'CLAY')])\n")
+cat("  # Sand+Clay should NOT sum to 100 (silt exists)\n\n")
+
+cat("☐ 2. Spatial Coverage\n")
+cat("─────────────────────\n")
+cat("Check: Sample distribution\n")
+cat("  # Plot sample locations\n")
+cat("  plot(sf::st_as_sf(data, coords=c('x','y')))\n")
+cat("  # Look for clusters, gaps, edge samples\n\n")
+
+cat("Check: Adequate spatial extent\n")
+cat("  data_range <- apply(data[,c('x','y')],2,range)\n")
+cat("  grid_range <- apply(grid_sf,2,range)\n")
+cat("  # Grid should be within or slightly beyond data\n\n")
+
+cat("☐ 3. Outlier Detection\n")
+cat("──────────────────────\n")
+cat("Check: Statistical outliers\n")
+cat("  for(col in c('SAND','SILT','CLAY')) {\n")
+cat("    boxplot(data[[col]], main=col)\n")
+cat("    # Investigate points > 1.5×IQR\n")
+cat("  }\n\n")
+
+cat("Check: Spatial outliers (unusual patterns)\n")
+cat("  # If one point very different from neighbors\n")
+cat("  # Verify it's not data entry error\n\n")
+
+cat("☐ 4. Stationarity Assessment\n")
+cat("────────────────────────────\n")
+cat("Check: Constant mean across space\n")
+cat("  # Divide domain into quadrants\n")
+cat("  quad_means <- aggregate(data[,'SAND'],\n")
+cat("                          by=list(quad=data$quadrant),\n")
+cat("                          mean)\n")
+cat("  # Should be similar (no trend)\n\n")
+
+cat("Check: Constant variance\n")
+cat("  quad_sds <- aggregate(data[,'SAND'],\n")
+cat("                        by=list(quad=data$quadrant),\n")
+cat("                        sd)\n")
+cat("  # Should be similar (no heteroscedasticity)\n\n")
+
+cat("\n\nPOST-SIMULATION VALIDATION\n")
+cat("==========================\n\n")
+
+cat("☐ 1. Constraint Satisfaction\n")
+cat("────────────────────────────\n")
+cat("Check: Compositional sum\n")
+cat("  sim_sums <- rowSums(sims_df[,grep('SAND|SILT|CLAY', names(sims_df))])\n")
+cat("  all(abs(sim_sums - 100) < 0.01)  # Should be TRUE\n\n")
+
+cat("Check: Non-negativity\n")
+cat("  all(sims_df >= 0)  # Should be TRUE\n")
+cat("  all(sims_df <= 100)  # Should be TRUE\n\n")
+
+cat("☐ 2. Statistical Reproduction\n")
+cat("──────────────────────────────\n")
+cat("Check: Mean reproduction\n")
+cat("  obs_mean <- mean(data$SAND)\n")
+cat("  sim_mean <- mean(sims_df$SAND.sim1)\n")
+cat("  abs(obs_mean - sim_mean) < 5  # Within 5%?\n\n")
+
+cat("Check: Variance reproduction\n")
+cat("  obs_var <- var(data$SAND)\n")
+cat("  sim_var <- var(sims_df$SAND.sim1)\n")
+cat("  abs(obs_var - sim_var) / obs_var < 0.2  # Within 20%?\n\n")
+
+cat("Check: Spatial structure (variogram)\n")
+cat("  # Re-compute empirical variogram from sim\n")
+cat("  vgm_sim <- gstat::variogram(..., data=sims_df)\n")
+cat("  # Should show similar spatial structure\n\n")
+
+cat("☐ 3. Visual Plausibility\n")
+cat("────────────────────────\n")
+cat("Check: Map appearance\n")
+cat("  terra::plot(sims, main='Sand (%) - Sim 1')\n")
+cat("  # Does it look reasonable?\n")
+cat("  # Appropriate smoothness vs roughness?\n")
+cat("  # Artifacts or unrealistic patterns?\n\n")
+
+cat("Check: Probability maps make sense\n")
+cat("  prob_sand_gt60 <- gc_probability_map(sims, 60)\n")
+cat("  terra::plot(prob_sand_gt60)\n")
+cat("  # Do high probabilities occur near\n")
+cat("  # observed high-sand locations?\n\n")
+
+cat("☐ 4. Cross-Validation\n")
+cat("─────────────────────\n")
+cat("Leave-one-out validation:\n")
+cat("  loo_errors <- numeric(nrow(data))\n")
+cat("  for(i in 1:nrow(data)) {\n")
+cat("    # Kriged value at held-out location i\n")
+cat("    pred <- krige(formula, data[-i,], data[i,])\n")
+cat("    loo_errors[i] <- pred - data[i, 'SAND']\n")
+cat("  }\n")
+cat("  RMSE <- sqrt(mean(loo_errors^2))\n")
+cat("  MAE <- mean(abs(loo_errors))\n")
+cat("  # Should be small relative to data SD\n")
 ```
 
 ## When to Contact Maintainers

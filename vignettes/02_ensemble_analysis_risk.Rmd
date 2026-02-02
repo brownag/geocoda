@@ -6,7 +6,7 @@ output:
   rmarkdown::html_vignette:
     number_sections: true
 vignette: >
-  %\VignetteIndexEntry{Ensemble Analysis}
+  %\VignetteIndexEntry{Ensemble Analysis & Risk Assessment}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 ---
@@ -33,6 +33,12 @@ After generating multiple spatial realizations, the next step is ensemble post-p
 
 These tools transform simulations into actionable decision support products.
 
+## Vignette Flow
+
+- **Start here (Vignette 00):** Complete workflow from data to simulation
+- **You are here (Vignette 02):** Post-processing multiple realizations for decision support
+- **Next:** Vignette 03 for multi-zone analysis, Vignette 04 for 3D mapping
+
 # Setup
 
 ```{r, message=FALSE}
@@ -45,31 +51,58 @@ set.seed(42)
 
 # Generating Test Ensemble
 
-For demonstration, create a synthetic ensemble representing multiple realizations:
+For demonstration, create a realistic ensemble representing spatial uncertainty in soil texture. Each realization represents an equally plausible map of soil properties given our field observations:
 
 ```{r ensemble_setup}
-# Simulate 100 realizations across 100 locations
-n_grid <- 100
-n_realizations <- 100
+set.seed(42)
+n_locations <- 25
+n_realizations <- 50
+
+grid_df <- expand.grid(
+  x = seq(1000, 9000, length.out = 5),
+  y = seq(1000, 9000, length.out = 5)
+)
 
 sims_list <- list()
 for (i in 1:n_realizations) {
-  # Generate realizations with compositional constraints
-  sand <- rnorm(n_grid, mean = 50, sd = 10)
-  silt <- rnorm(n_grid, mean = 30, sd = 8)
+  spatial_component <- rnorm(n_locations, 0, 8)
+  local_variation <- rnorm(n_locations, 0, 3)
+
+  sand <- pmin(pmax(25 + spatial_component + local_variation, 10), 40)
+  silt <- pmin(pmax(65 - spatial_component/2 + rnorm(n_locations, 0, 2), 50), 75)
   clay <- 100 - sand - silt
 
-  # Normalize to 100%
-  total <- sand + silt + clay
+  clay <- pmax(clay, 10)
+  silt <- 100 - sand - clay
+
   sims_list[[i]] <- data.frame(
-    SAND = (sand / total) * 100,
-    SILT = (silt / total) * 100,
-    CLAY = (clay / total) * 100
+    x = grid_df$x,
+    y = grid_df$y,
+    SAND = sand,
+    SILT = silt,
+    CLAY = clay
   )
 }
 
-cat("Ensemble: ", n_realizations, "realizations ×",
-    n_grid, "grid points\n")
+head(sims_list[[1]])
+```
+
+**Key Concept:** Each realization is a plausible spatial map, reflecting our uncertainty from limited field data. By examining all realizations together, we quantify spatial uncertainty and make robust decisions.
+
+## Visualize Sample Realizations
+
+Nine sample realizations showing spatial variability. Each panel represents an equally plausible map of sand content given our field observations. Notice the similar broad patterns (spatial correlation) but different fine-scale details—this spread represents spatial uncertainty.
+
+```{r viz_realizations}
+par(mfrow = c(3, 3), mar = c(2, 2, 2, 1))
+for (i in 1:9) {
+  plot(sims_list[[i]]$x, sims_list[[i]]$y,
+       col = hcl.colors(10, "YlGnBu")[cut(sims_list[[i]]$SAND, 10)],
+       pch = 15, cex = 4,
+       main = paste("Realization", i),
+       xlab = "", ylab = "")
+}
+par(mfrow = c(1, 1))
 ```
 
 # Ensemble Summary Statistics
@@ -77,12 +110,10 @@ cat("Ensemble: ", n_realizations, "realizations ×",
 ## Compute Statistics Across Realizations
 
 ```{r ensemble_stats}
-# For each component and location, compute mean, SD, and percentiles
 compute_ensemble_stats <- function(sim_list) {
   n_grid <- nrow(sim_list[[1]])
   components <- colnames(sim_list[[1]])
 
-  # Initialize arrays
   stats <- list(
     mean = matrix(NA, n_grid, length(components)),
     sd = matrix(NA, n_grid, length(components)),
@@ -95,7 +126,6 @@ compute_ensemble_stats <- function(sim_list) {
   colnames(stats$p05) <- components
   colnames(stats$p95) <- components
 
-  # Compute statistics for each component
   for (j in seq_along(components)) {
     values <- sapply(sim_list, function(df) df[[j]])
     stats$mean[, j] <- rowMeans(values)
@@ -109,12 +139,13 @@ compute_ensemble_stats <- function(sim_list) {
 
 ensemble_stats <- compute_ensemble_stats(sims_list)
 
-# Summary of results
-cat("SAND statistics:\n")
-cat("  Mean:", mean(ensemble_stats$mean[, "SAND"]), "%\n")
-cat("  SD:", mean(ensemble_stats$sd[, "SAND"]), "%\n")
-cat("  Range [P05, P95]:", mean(ensemble_stats$p05[, "SAND"]), "to",
-    mean(ensemble_stats$p95[, "SAND"]), "%\n")
+# Summary statistics
+data.frame(
+  Mean = mean(ensemble_stats$mean[, "SAND"]),
+  SD = mean(ensemble_stats$sd[, "SAND"]),
+  P05 = mean(ensemble_stats$p05[, "SAND"]),
+  P95 = mean(ensemble_stats$p95[, "SAND"])
+)
 ```
 
 ## Interpret Ensemble Statistics
@@ -155,6 +186,10 @@ par(mfrow = c(1, 1))
 ## Verify Compositional Properties
 
 ```{r validation}
+# Recall ensemble characteristics
+n_realizations <- length(sims_list)
+n_grid <- nrow(sims_list[[1]])
+
 # Check that all realizations satisfy compositional constraints
 for (i in sample(1:n_realizations, 3)) {
   realization <- sims_list[[i]]
@@ -194,24 +229,22 @@ cat("Constraint satisfaction:", 100 * (1 - violation_count /
 ## Calculate Threshold Exceedance Probabilities
 
 ```{r prob_mapping}
-# For demonstration, extract SAND realizations as a matrix
 sand_matrix <- sapply(1:n_realizations, function(i) sims_list[[i]]$SAND)
 
-# Calculate P(SAND > 50%)
 threshold <- 50
 prob_exceed <- rowMeans(sand_matrix > threshold)
 
-# Create probability raster
 prob_rast <- create_grid_raster(prob_exceed)
-plot(prob_rast, main = "P(SAND > 50%)", col = viridis::viridis(20))
+plot(prob_rast, main = "P(SAND > 50%)", col = hcl.colors(20, "YlGnBu"))
 
-# Interpretation
-cat("Probability summary:\n")
-cat("  Min P(SAND > 50%):", round(min(prob_exceed), 3), "\n")
-cat("  Max P(SAND > 50%):", round(max(prob_exceed), 3), "\n")
-cat("  Mean P(SAND > 50%):", round(mean(prob_exceed), 3), "\n")
-cat("  Locations with P > 0.9:", sum(prob_exceed > 0.9), "\n")
-cat("  Locations with P < 0.1:", sum(prob_exceed < 0.1), "\n")
+data.frame(
+  Metric = c("Min", "Max", "Mean", "P > 0.9", "P < 0.1"),
+  Value = c(round(min(prob_exceed), 3),
+            round(max(prob_exceed), 3),
+            round(mean(prob_exceed), 3),
+            sum(prob_exceed > 0.9),
+            sum(prob_exceed < 0.1))
+)
 ```
 
 **Use cases**:
@@ -224,7 +257,6 @@ cat("  Locations with P < 0.1:", sum(prob_exceed < 0.1), "\n")
 ## Compute Percentile Bands
 
 ```{r percentile_mapping}
-# Compute P10, P50, P90 for each location
 compute_percentiles <- function(sim_list, percentiles = c(0.1, 0.5, 0.9)) {
   n_grid <- nrow(sim_list[[1]])
   components <- colnames(sim_list[[1]])
@@ -241,26 +273,24 @@ compute_percentiles <- function(sim_list, percentiles = c(0.1, 0.5, 0.9)) {
 
 percentiles <- compute_percentiles(sims_list)
 
-# Extract SAND percentiles
 sand_p10 <- create_grid_raster(percentiles$SAND[, 1])
 sand_p50 <- create_grid_raster(percentiles$SAND[, 2])
 sand_p90 <- create_grid_raster(percentiles$SAND[, 3])
 
-# Visualize uncertainty band
 par(mfrow = c(1, 3))
 plot(sand_p10, main = "P10 (Conservative)", zlim = c(0, 100))
 plot(sand_p50, main = "P50 (Median)", zlim = c(0, 100))
 plot(sand_p90, main = "P90 (Optimistic)", zlim = c(0, 100))
 par(mfrow = c(1, 1))
 
-# Uncertainty band width
 uncertainty_width <- sand_p90 - sand_p10
 plot(uncertainty_width, main = "Uncertainty Band Width (P90-P10)")
 
-cat("Uncertainty metrics:\n")
-cat("  Mean band width:", mean(values(uncertainty_width)), "%\n")
-cat("  Locations with high uncertainty (width > 20):",
-    sum(values(uncertainty_width) > 20, na.rm = TRUE), "\n")
+data.frame(
+  Metric = c("Mean Band Width", "High Uncertainty Locations (>20%)"),
+  Value = c(round(mean(values(uncertainty_width)), 2),
+            sum(values(uncertainty_width) > 20, na.rm = TRUE))
+)
 ```
 
 **Interpretation**:
@@ -276,44 +306,32 @@ cat("  Locations with high uncertainty (width > 20):",
 Real-world decisions have asymmetric costs. Example: Carbon credit issuance where over-crediting costs 2× under-crediting:
 
 ```{r loss_framework}
-# Define loss function for asymmetric costs
 loss_asymmetric <- function(prob_exceed, cost_fp = 2, cost_fn = 1) {
-  # Expected loss of false positive (approve when shouldn't)
   loss_fp <- (1 - prob_exceed) * cost_fp
-
-  # Expected loss of false negative (deny when shouldn't)
   loss_fn <- prob_exceed * cost_fn
-
-  # Total expected loss
   loss_fp + loss_fn
 }
 
-# Calculate expected loss across the domain
-cost_fp <- 2.0  # Over-crediting cost
-cost_fn <- 1.0  # Under-crediting cost
+cost_fp <- 2.0
+cost_fn <- 1.0
 
 expected_loss <- loss_asymmetric(prob_exceed, cost_fp, cost_fn)
 
-# Visualize loss map
 loss_rast <- create_grid_raster(expected_loss)
 plot(loss_rast, main = paste0("Expected Loss (a=",
      cost_fp, ", b=", cost_fn, ")"),
-     col = viridis::viridis(20))
+     col = hcl.colors(20, "YlGnBu"))
 
-# Decision threshold: approve if expected loss < minimum
 decision <- (expected_loss < min(expected_loss[expected_loss > 0]))
 decision_rast <- create_grid_raster(as.numeric(decision))
 plot(decision_rast, main = "Decision (1=Approve, 0=Deny)")
 
-cat("Decision results:\n")
-cat("  Locations approved:", sum(decision), "/",
-    n_per_side * n_per_side, "\n")
+paste("Locations approved:", sum(decision), "/", n_per_side * n_per_side)
 ```
 
 ## Sensitivity to Cost Parameters
 
 ```{r cost_sensitivity}
-# How does the decision change with different cost ratios?
 cost_ratios <- c(1, 1.5, 2, 3, 5)
 approvals <- numeric(length(cost_ratios))
 
@@ -323,13 +341,10 @@ for (i in seq_along(cost_ratios)) {
   approvals[i] <- sum(loss < min(loss[loss > 0]))
 }
 
-cat("Cost sensitivity analysis:\n")
-for (i in seq_along(cost_ratios)) {
-  cat("  Cost ratio a/b =", cost_ratios[i], "→",
-      approvals[i], "approvals\n")
-}
-
-cat("\nInterpretation: Higher cost of false positive → Fewer approvals\n")
+data.frame(
+  Cost_Ratio = cost_ratios,
+  Approvals = approvals
+)
 ```
 
 # Complete Risk Workflow
@@ -337,7 +352,7 @@ cat("\nInterpretation: Higher cost of false positive → Fewer approvals\n")
 ## End-to-End Example: Carbon Audit
 
 ```{r carbon_audit, eval=FALSE}
-# Using Phase 1 functions (see Vignette 00 for full example):
+# Using risk assessment functions (see Vignette 00 for full example):
 
 # 1. Probability mapping
 prob_soc_50 <- gc_probability_map(soc_realizations, threshold = 50)

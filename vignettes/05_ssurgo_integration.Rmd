@@ -23,55 +23,219 @@ knitr::opts_chunk$set(
 
 # Overview
 
-This vignette demonstrates integration of SSURGO (Soil Survey Geographic) database with geocoda for large-scale soil mapping. Topics covered:
+SSURGO (Soil Survey Geographic) is the national soil database covering the entire United States. This vignette demonstrates how to integrate SSURGO data with geocoda's geostatistical framework for large-scale soil mapping that combines legacy data with field observations.
+
+Topics covered:
 
 1. **Live SSURGO queries** via soilDB package
-2. **Component aggregation** - Weighting within map units
-3. **Tile-based workflows** - Spatial optimization for large areas
-4. **Integration with field data** - Combining SSURGO with observed samples
-5. **Multi-source uncertainty** - Weighting by data quality
+2. **Component aggregation** - Handling multiple soil series within map units
+3. **Multi-source integration** - Combining SSURGO with field samples
+4. **Confidence weighting** - Balancing data quality across sources
+5. **Hierarchical zones** - Using SSURGO map units as zones in shrinkage estimation
 
-## Vignette Status
+# Key Concepts
 
-This is a **minimal scaffold vignette**. It will be filled in with complete examples and demonstrations after Phase 3 and Phase 4 implementation.
+## SSURGO Strengths & Limitations
 
-## Key Concepts (To Be Expanded)
-
-**SSURGO strengths:**
+**SSURGO Advantages:**
 - Complete spatial coverage (entire USA)
-- Standardized component definitions
-- Mapunit hierarchies
+- Standardized component definitions and hierarchies
+- Long-term consistency for trend analysis
+- Provides regional context and stratification
 
-**Integration approach:**
-- Use as spatial prior/context
-- Weight by component percentage
-- Combine with field observations
+**Limitations to Account For:**
+- Legacy data quality varies by survey vintage
+- Aggregated at map unit level (coarser than field)
+- Limited sample size representation within units
+- May not reflect local variation from new data
 
-**Tile-based optimization:**
-- Query large regions efficiently
-- Cache results (24-hour TTL)
-- Parallel processing
+**Best Practice**: Treat SSURGO as informative prior. Weight field observations higher, use SSURGO for spatial context.
 
-## Placeholder: Complete Example
+## Integration Strategies
 
-```{r placeholder, eval=FALSE}
-# COMING: Complete SSURGO integration workflow
+**Strategy 1: Data Fusion**
+- Combine SSURGO and field observations in single dataset
+- Use confidence weights to reflect data source quality
+- Standardize horizons/depths for comparison
 
-# 1. Query SSURGO for study area
-# ssurgo_data <- soilDB::fetchSDA(...)
+**Strategy 2: Hierarchical Zones**
+- Use SSURGO map units as zones
+- Fit zone-specific models
+- Field observations refine zone estimates (shrinkage)
+- Maintain SSURGO spatial coverage where field data sparse
 
-# 2. Extract component data
-# components <- aggregate_components(ssurgo_data)
+**Strategy 3: Tile-Based Optimization**
+- Query SSURGO by region/tile
+- Cache results to minimize web requests
+- Parallel processing for large areas
+- Regional summary maps from tiles
 
-# 3. Combine with field observations
-# combined <- rbind(field_obs, ssurgo_components)
+# Step-by-Step SSURGO Integration Workflow
 
-# 4. Weight by source quality
-# weighted <- weight_by_source(combined)
+## Step 1: Query SSURGO via soilDB
 
-# 5. Model and simulate
-# realizations <- gc_sim_composition(model, grid)
+The soilDB package provides convenient access to SSURGO data through the Soil Data Access (SDA) web service. Define your study area and retrieve horizon-level texture data.
+
+```{r ssurgo_query, eval=FALSE}
+library(soilDB)
+library(sf)
+
+# Define study area extent
+study_bbox <- st_bbox(
+  c(xmin = -120.5, xmax = -120.3, ymin = 38.5, ymax = 38.7),
+  crs = 4326
+)
+
+# Query SSURGO via SDA web service
+ssurgo_data <- fetchSDA(
+  WHERE = "mukey IN (SELECT mukey FROM mupolygon
+           WHERE ST_Intersects(geom, ST_GeomFromText('...')))"
+)
+
+# Extract horizon data
+ssurgo_hz <- horizons(ssurgo_data)
 ```
+
+## Step 2: Extract & Filter Soil Components
+
+Focus on complete texture data within a reasonable depth range. Filter out missing values and limit to surface 1 meter depth.
+
+```{r ssurgo_filter, eval=FALSE}
+ssurgo_hz_filtered <- ssurgo_hz %>%
+  dplyr::filter(
+    !is.na(sandtotal),
+    !is.na(silttotal),
+    !is.na(claytotal),
+    hzdept_r < 100  # Surface to 1m
+  ) %>%
+  dplyr::mutate(
+    source = "SSURGO",
+    confidence = 0.7  # Lower than field observations
+  )
+```
+
+## Step 3: Prepare Field Observations
+
+Load your field survey data and standardize columns to match SSURGO format. Assign high confidence weights to field observations.
+
+```{r field_data, eval=FALSE}
+field_data <- readRDS("field_observations.rds")
+
+field_subset <- field_data %>%
+  dplyr::select(
+    x, y, hzdept_r, hzdepb_r,
+    sandtotal, silttotal, claytotal
+  ) %>%
+  dplyr::mutate(
+    source = "Field",
+    confidence = 1.0  # Higher confidence than SSURGO
+  )
+```
+
+## Step 4: Combine Data Sources
+
+Stack field and SSURGO data into a single unified dataset. Track data source and confidence for downstream weighting.
+
+```{r combine_data, eval=FALSE}
+combined_data <- dplyr::bind_rows(field_subset, ssurgo_hz_filtered)
+
+# Summary statistics
+combined_data %>%
+  dplyr::group_by(source) %>%
+  dplyr::summarise(
+    n_samples = n(),
+    mean_sand = mean(sandtotal, na.rm = TRUE),
+    mean_clay = mean(claytotal, na.rm = TRUE)
+  )
+```
+
+## Step 5: Weight by Source Quality
+
+Create confidence weights reflecting data source. Use these weights downstream in hierarchical models or weighted kriging.
+
+```{r source_weights, eval=FALSE}
+# Option A: Direct confidence weights
+combined_data$weight <- combined_data$confidence
+
+# Option B: Separate analyses by source
+field_only <- dplyr::filter(combined_data, source == "Field")
+ssurgo_only <- dplyr::filter(combined_data, source == "SSURGO")
+```
+
+## Step 6: Hierarchical Modeling with SSURGO Zones
+
+Use SSURGO map units as hierarchical zones. Field observations refine zone estimates through shrinkage estimation.
+
+```{r hierarchical_zones, eval=FALSE}
+# Load SSURGO map unit polygons
+mapunit_zones <- st_read("ssurgo_mapunits.shp")
+
+# Assign observations to zones via spatial join
+combined_data_sf <- st_as_sf(combined_data, coords = c("x", "y"), crs = 4326)
+combined_data_sf <- st_join(combined_data_sf, mapunit_zones, join = st_within)
+
+# Fit hierarchical model with SSURGO zones
+fit <- gc_fit_hierarchical_model(
+  data = combined_data_sf,
+  zone_assignment = combined_data_sf$mukey,
+  priors = list(
+    global_mean = c(40, 35, 25),
+    pooling = "moderate"
+  ),
+  backend = "analytical"
+)
+```
+
+## Step 7: Spatial Simulation
+
+Create prediction grid covering study area. Assign grid cells to SSURGO zones and simulate within each zone using fitted model.
+
+```{r spatial_simulation, eval=FALSE}
+# Create regular grid
+grid <- st_make_grid(study_bbox, cellsize = 250, what = "centers")
+grid_sf <- st_as_sf(data.frame(geometry = grid))
+
+# Assign grid cells to zones
+grid_sf <- st_join(grid_sf, mapunit_zones, join = st_within)
+
+# Simulate compositional realizations per zone
+sims <- gc_sim_composition(
+  model = fit,
+  locations = grid_sf,
+  nsim = 50,
+  target_names = c("SAND", "SILT", "CLAY")
+)
+```
+
+## Step 8: Risk Assessment & Decision Support
+
+Use ensemble realizations to create probability maps and decision products for management.
+
+```{r risk_assessment, eval=FALSE}
+# Probability of sand > 50%
+prob_sand_high <- gc_probability_map(
+  sims[["SAND"]],
+  threshold = 50,
+  operator = ">"
+)
+
+# Percentile maps for uncertainty quantification
+sand_p10 <- gc_percentile_map(sims[["SAND"]], percentiles = 0.1)
+sand_p50 <- gc_percentile_map(sims[["SAND"]], percentiles = 0.5)
+sand_p90 <- gc_percentile_map(sims[["SAND"]], percentiles = 0.9)
+
+# Visualize
+terra::plot(prob_sand_high, main = "P(Sand > 50%)")
+```
+
+## Best Practices for SSURGO Integration
+
+1. **Source Documentation**: Always track data source (field vs SSURGO)
+2. **Confidence Weighting**: Assign lower weights to SSURGO (legacy data, coarser)
+3. **Validation**: Compare SSURGO estimates to field observations in overlap zones
+4. **Spatial Context**: Use SSURGO as prior/context, refine with field data
+5. **Caching**: Cache SSURGO queries (24-hour TTL) to avoid redundant web requests
+6. **Uncertainty**: Quantify extra uncertainty from legacy/coarse SSURGO data
 
 ## References & Resources
 

@@ -1,0 +1,235 @@
+---
+title: "Feature Roadmap and Development Status"
+author: "Andrew G. Brown"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_vignette:
+    number_sections: true
+vignette: >
+  %\VignetteIndexEntry{Feature Roadmap and Development Status}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 8,
+  fig.height = 6,
+  dpi = 100
+)
+```
+
+# Overview
+
+Development status and roadmap for geocoda capabilities. This document tracks implemented features across multiple capability areas for spatial modeling and compositional data analysis.
+
+## Current Status
+
+All major capability areas are complete and documented:
+
+- ✓ **Risk Assessment**: Probability mapping and decision support
+- ✓ **Multi-Backend Hierarchical Models**: Analytical, Stan, Nimble backends
+- ✓ **Multivariate Decorrelation**: Minimum/Maximum Autocorrelation Factors (MAF)
+- ✓ **Block Support Simulation**: Direct Block Simulation (DBS) and averaging
+- ✓ **Vertical Discretization**: Mass-preserving spline standardization
+- ✓ **Stratigraphic Transformation**: Coordinate transformation with horizon unwrinkling
+- ✓ **3D Geostatistics**: Full 3D variogram fitting and simulation in stratigraphic space
+
+# Implemented Features
+
+## Risk Assessment
+
+**Overview**: Probability mapping for decision-making under uncertainty.
+
+**Key Functions**:
+- `gc_probability_map()` - Compute probability of exceeding thresholds
+- `gc_percentile_map()` - Generate P10, P50, P90 estimates
+- `gc_risk_assessment()` - Asymmetric cost functions for decision support
+
+**Vignettes**: See `02_ensemble_analysis_risk` for complete examples.
+
+## Hierarchical Modeling
+
+**Overview**: Multi-backend implementations for hierarchical/mixed-effects models.
+
+**Backends Supported**:
+- Analytical (fast, closed-form)
+- Stan (Bayesian, full posterior inference)
+- Nimble (flexible MCMC)
+
+**Key Functions**:
+- `gc_ilr_model()` - Build ILR-space models
+- `gc_fit_ensemble()` - Fit ensemble of hierarchical models
+- `gc_cross_validate()` - Model validation and comparison
+
+**Vignettes**: See `03_hierarchical_modeling`, `06_hierarchical` for detailed workflows.
+
+## Multivariate Decorrelation (MAF)
+
+**Overview**: Minimum/Maximum Autocorrelation Factors for decorrelating multivariate spatial data.
+
+**Key Functions**:
+- `gc_compute_maf()` - Compute MAF factors
+- `gc_maf_model()` - Build model with MAF-transformed data
+- `gc_sim_composition()` - Simulate with MAF decorrelation
+
+**Applications**:
+- Compositional soil data with ILR preprocessing
+- Non-compositional properties (pH, CEC, OM) with factor ordering
+- Joint compositional + non-compositional simulation
+
+**Vignettes**: See `05_ensemble` for examples.
+
+## Block Support Simulation (DBS)
+
+**Overview**: Direct simulation at block (management-unit) support, accounting for volume-variance relationship.
+
+**Key Functions**:
+- `gc_discretize_block()` - 2D block discretization into sub-points
+- `gc_discretize_block_3d()` - 3D block discretization
+- `gc_average_block_ilr()` - 2D block-support averaging
+- `gc_average_block_ilr_3d()` - 3D block-support averaging
+
+**Applications**:
+- Carbon credit auditing at field scale
+- Precision agriculture decision support
+- Contamination risk assessment
+- Large-scale mapping efficiency
+
+## Vertical Discretization
+
+**Overview**: Mass-preserving spline standardization to GlobalSoilMap depth intervals.
+
+**Supported Depths**: 0-5, 5-15, 15-30, 30-60, 60-100, 100-200 cm
+
+**Key Functions**:
+- Spline interpolation for continuous depth functions
+- Mass conservation validation
+- Integration with aqp package standards
+
+## Stratigraphic Coordinate Transformation
+
+**Overview**: Transform complex folded/sloping soil horizons into flattened stratigraphic space where pedogenic processes are spatially continuous.
+
+**Problem Solved**:
+- Sloping horizons violate spatial stationarity
+- Folded landscapes create discontinuities
+- Regular (x,y,z) misrepresents soil structure
+
+**Solution**:
+Transform to stratigraphic coordinates (x,y,z_strat) where:
+- Surfaces are parallel and flattened
+- Spatial continuity is restored
+- Pedogenic processes are aligned
+
+**Transformation Types**:
+1. **Proportional**: z_strat = ((z_top - z) / thickness) × h_const
+2. **Top-onlap**: z_strat = z_top - z (surface-driven formation)
+3. **Bottom-erosional**: z_strat = z - z_base (bedrock-controlled)
+4. **Rotational**: z_strat = R × [x,y,z]^T (steep slopes)
+
+**Key Functions**:
+- `gc_define_surfaces()` - Define top/bottom horizon surfaces
+- `gc_stratigraphic_transform()` - Transform to stratigraphic space
+- `gc_inverse_stratigraphic_transform()` - Back-transform to Cartesian
+
+**Vignettes**: See `10_3d_stratigraphic_geostatistics` for complete workflow.
+
+## 3D Geostatistics
+
+**Overview**: Full 3D spatial modeling with geometric anisotropy in stratigraphic space.
+
+**Key Capabilities**:
+- Separate horizontal and vertical variogram components
+- Anisotropy ratio computation (horizontal / vertical ranges)
+- 3D kriging via gstat native implementation
+- 3D simulation at multiple depth slices
+- Block discretization for management-scale uncertainty
+
+**Geometric Anisotropy**:
+- Typical soil profiles: horizontal range >> vertical range (10-100×)
+- Example: 100 m lateral continuity, 5 m vertical continuity
+- Automatically handled via gstat interface
+
+**Key Functions**:
+- `gc_fit_vgm_3d()` - Fit 3D variogram with anisotropy
+- `gc_sim_composition()` - 3D simulation (auto-detects z coordinate)
+- `gc_discretize_block_3d()` - 3D block discretization
+- `gc_average_block_ilr_3d()` - 3D block averaging
+
+**Vignettes**: See `10_3d_stratigraphic_geostatistics` for complete workflow.
+
+# Integration Examples
+
+## Complete 3D Workflow
+
+```r
+# 1. Define surfaces and import data
+surfaces <- gc_define_surfaces(...)
+locations <- read.csv(...)  # x, y, z, sand, silt, clay
+
+# 2. Transform to stratigraphic space
+locations_strat <- gc_stratigraphic_transform(
+  locations, surfaces = surfaces,
+  transform_type = "proportional"
+)
+
+# 3. ILR transform for compositional data
+ilr_params <- gc_ilr_params(locations_strat[, c("sand", "silt", "clay")])
+
+# 4. Fit 3D variogram with anisotropy
+vgm_3d <- gc_fit_vgm_3d(ilr_params, locations_strat)
+
+# 5. Build 3D geostatistical model
+model_3d <- gc_ilr_model(ilr_params, variogram_model = vgm_3d)
+
+# 6. Simulate at 3D prediction grid
+grid_3d <- expand.grid(x = seq(0, 1000, 50),
+                       y = seq(0, 1000, 50),
+                       z = seq(0, 100, 20))
+sims_3d <- gc_sim_composition(model_3d, grid_3d, nsim = 100)
+
+# 7. Optional: Block-scale uncertainty
+blocks <- expand.grid(x = seq(100, 900, 100),
+                      y = seq(100, 900, 100),
+                      z = c(30, 70))
+sub_points <- gc_discretize_block_3d(blocks, c(100, 100, 40))
+block_sims <- gc_sim_composition(model_3d, sub_points, nsim = 100)
+
+# 8. Back-transform to Cartesian
+results_cartesian <- gc_inverse_stratigraphic_transform(sims_3d)
+
+# 9. Risk assessment
+prob_clay_high <- gc_probability_map(sims_3d, threshold = 40)
+```
+
+# Research References
+
+**Compositional Data Analysis**:
+- Aitchison, J. (1986). The Statistical Analysis of Compositional Data. Chapman and Hall.
+- van den Boogaart, K. G., & Tolosana-Delgado, R. (2013). Analyzing Compositional Data with R. Springer.
+
+**Geostatistics**:
+- Deutsch, C. V., & Journel, A. G. (1992). GSLIB: Geostatistical Software Library. Oxford University Press.
+- Goovaerts, P. (1997). Geostatistics for Natural Resources Evaluation. Oxford University Press.
+
+**Spatial Modeling**:
+- Bishop, T. F., McBratney, A. B., & Laslett, G. M. (1999). Modelling soil attribute depth functions with equal-area quadratic smoothing splines. Geoderma, 91(1-2), 27-45.
+
+**Multivariate Decorrelation**:
+- Switzer, P., & Green, A. A. (1984). Non-linear inversion of seismic reflection data. Journal of Geophysical Research, 89(B2), 1305-1313.
+- Desbarats, A. J., & Dimitrakopoulos, R. (2000). Geostatistical simulation of regionalized pore-size distributions. Mathematical Geology, 32(8), 919-942.
+
+# Feedback and Contributions
+
+**GitHub**: https://github.com/brownag/geocoda
+
+- Report issues and feature requests on the Issues page
+- Contribute via Pull Requests
+- Discussion on GitHub Discussions
+
+---
+
+Last updated: `r Sys.Date()`

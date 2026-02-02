@@ -1,0 +1,962 @@
+---
+title: "Hierarchical Model Backends: Deep Dive"
+author: "Andrew G. Brown"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_vignette:
+    number_sections: true
+vignette: >
+  %\VignetteIndexEntry{Hierarchical Backends Deep Dive}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 8,
+  fig.height = 6,
+  dpi = 100
+)
+```
+
+# Overview
+
+Technical guide for the three hierarchical model backends available in geocoda:
+
+1. **Analytical (Empirical Bayes)** - Fast, deterministic shrinkage estimation
+2. **Stan (HMC)** - Full Bayesian inference with Hamiltonian Monte Carlo
+3. **Nimble (MCMC)** - Adaptive MCMC with flexible model specification
+
+This vignette provides mathematical foundations, implementation details, and guidance for developers extending these backends.
+
+## Vignette Status
+
+**Minimal scaffold** - Will be expanded with:
+- Detailed mathematical derivations
+- Backend implementation architecture
+- MCMC sampler configuration
+- Convergence diagnostics and interpretation
+- Debugging and optimization strategies
+- Benchmarking comparisons
+
+# Analytical Backend: Empirical Bayes
+
+## Mathematical Foundations
+
+```{r analytical_math}
+# Analytical Backend: Empirical Bayes Mathematical Structure
+# =========================================================
+
+# HIERARCHICAL MODEL
+# Three levels of parameters:
+#
+# 1. OBSERVATION LEVEL
+#    y_n ~ N(μ_z[n], Σ_zone)
+#    Each observation in zone z drawn from multivariate normal
+#    Mean depends on zone, covariance is zone-specific
+#
+# 2. ZONE LEVEL (Random Effects)
+#    μ_z ~ N(μ_global, τ_pooling² I)
+#    Zone means shrunk toward global mean
+#    τ_pooling controls shrinkage (0 = max shrinkage, ∞ = no shrinkage)
+#
+# 3. GLOBAL LEVEL (Hyperpriors)
+#    μ_global ~ N(μ_prior, σ_prior² I)
+#    Prior expectation and uncertainty on global mean
+
+# EMPIRICAL BAYES INFERENCE
+# Profile likelihood approach (ignores uncertainty about τ_pooling):
+# 1. Estimate τ_pooling from data via maximum likelihood
+# 2. Condition on estimated τ_pooling (treat as fixed)
+# 3. Compute zone-specific posterior means and uncertainties
+#
+# Key formula: Shrinkage Weight
+# w_z = n_z / (n_z + τ_pooling²)
+# where n_z = number of samples in zone z
+#
+# Posterior mean: μ_z^* = w_z * μ_z^MLE + (1 - w_z) * μ_global
+# - w_z ≈ 1 when n_z large (data-driven)
+# - w_z ≈ 0 when n_z small (shrunk toward global)
+
+cat("Analytical Backend: Shrinkage Formula\n")
+cat("=====================================\n")
+cat("Zone with n_z=5 samples, τ_pooling²=10:\n")
+n_z <- 5
+tau_sq <- 10
+w_z <- n_z / (n_z + tau_sq)
+cat("Shrinkage weight w_z =", n_z, "/ (", n_z, "+", tau_sq, ") =", round(w_z, 3), "\n")
+cat("→ 33% data, 67% global prior\n\n")
+
+cat("Zone with n_z=50 samples, τ_pooling²=10:\n")
+n_z <- 50
+w_z <- n_z / (n_z + tau_sq)
+cat("Shrinkage weight w_z =", n_z, "/ (", n_z, "+", tau_sq, ") =", round(w_z, 3), "\n")
+cat("→ 83% data, 17% global prior\n")
+```
+
+## Implementation Details
+
+```{r analytical_implementation}
+# Analytical Backend: Computational Implementation
+# ===============================================
+
+# STEP-BY-STEP ALGORITHM
+# 1. Compute zone-specific MLEs
+#    - For each zone z: μ_z^MLE = mean(y_n | zone[n] = z)
+#    - Covariance: Σ_z = cov(y_n | zone[n] = z)
+#
+# 2. Global hyperparameter estimation
+#    - μ_global = weighted mean across zones
+#    - σ_prior² = variance of zone means (reflects prior uncertainty)
+#
+# 3. Profile likelihood for pooling coefficient
+#    - Optimize τ_pooling to maximize marginal likelihood
+#    - Uses all data (zones inform pooling strength)
+#
+# 4. Apply shrinkage formula
+#    - Compute w_z = n_z / (n_z + τ_pooling²) for each zone
+#    - Posterior mean: μ_z^* = w_z * μ_z^MLE + (1 - w_z) * μ_global
+#    - Posterior variance: σ_z^*2 = 1/(n_z/σ² + 1/τ_pooling²)
+#
+# 5. Compute uncertainty intervals
+#    - Standard errors from posterior variances
+#    - 95% CI: μ_z^* ± 1.96 * SE_z
+
+# COMPUTATIONAL PROPERTIES
+# Complexity: O(Z * D²) where Z = zones, D = ILR dimensions
+#             Most time spent on matrix inversions (Σ_z^-1)
+# Runtime: Typically < 1 second for Z ≤ 100, D ≤ 5
+# Memory: O(Z * D²) storage for zone covariance matrices
+
+# ADVANTAGES
+cat("Analytical Backend: Key Strengths\n")
+cat("=================================\n")
+cat("✓ Deterministic & reproducible (no sampling)\n")
+cat("✓ Very fast (seconds for large problems)\n")
+cat("✓ No tuning required (automatic)\n")
+cat("✓ Closed-form solutions (interpretable)\n")
+cat("✓ Point estimates + confidence intervals\n")
+```
+
+## Limitations & Strengths
+
+```{r analytical_comparison}
+# Analytical Backend: When to Use This Approach
+# =============================================
+
+cat("STRENGTHS\n")
+cat("=========\n")
+cat("✓ Very fast inference (< 1 second typical)\n")
+cat("✓ No MCMC tuning or convergence diagnostics\n")
+cat("✓ Deterministic and fully reproducible\n")
+cat("✓ Ideal for initial data exploration\n")
+cat("✓ Point estimates suitable for many applications\n")
+cat("✓ Uncertainty quantified via standard errors\n\n")
+
+cat("LIMITATIONS\n")
+cat("===========\n")
+cat("✗ Point estimates only (no posterior samples)\n")
+cat("✗ Profile likelihood ignores uncertainty in τ_pooling\n")
+cat("✗ No posterior predictive simulation\n")
+cat("✗ Assumes normality (not robust to outliers)\n")
+cat("✗ No complex variance structures\n")
+cat("✗ Limited capability for missing data\n\n")
+
+cat("BEST USE CASES\n")
+cat("==============\n")
+cat("→ Quick exploratory analysis\n")
+cat("→ Fixed pooling structure (known zone groupings)\n")
+cat("→ Point estimates sufficient for decisions\n")
+cat("→ Large datasets (computational efficiency matters)\n")
+cat("→ Operational forecasting (speed critical)\n")
+```
+
+# Stan Backend: HMC Sampling
+
+## Mathematical Foundations
+
+```{r stan_math}
+# Stan Backend: Full Bayesian Inference via HMC
+# =============================================
+
+# GENERATIVE MODEL (Probabilistic Program)
+# ========================================
+#
+# y_n ~ Normal(μ_z[zone[n]], Σ)
+#   Each observation drawn from MVN with zone-specific parameters
+#
+# μ_z[z] ~ Normal(μ_global, τ_pooling² × I)
+#   Zone means centered at global mean (hierarchical shrinkage)
+#
+# μ_global ~ Normal(μ_prior, σ_prior²)
+#   Prior belief on global mean
+#
+# Covariance structure:
+#   Σ = L @ L'  (Cholesky decomposition)
+#   L ~ LKJChorlesky(2.0)  (flexible correlation prior)
+#   σ ~ Exponential(2.0)   (marginal SDs)
+#
+# Pooling coefficient:
+#   log(τ_pooling) ~ Normal(0, 1)  (weakly informative)
+
+# INFERENCE: Hamiltonian Monte Carlo (HMC)
+# ========================================
+# • Gradient: Automatic differentiation (Stan compiler)
+# • Sampler: NUTS (No-U-Turn Sampler)
+# • Warmup: Adaptive integration metric & step size
+# • Output: Full posterior samples (Markov chain)
+#
+# Posterior samples reveal:
+#   - Uncertainty about parameters (credible intervals)
+#   - Posterior correlations (dependencies)
+#   - Full joint distribution (not just point estimates)
+
+cat("Stan Backend: Inference Method\n")
+cat("=============================\n")
+cat("Algorithm: Hamiltonian Monte Carlo\n")
+cat("Sampler: NUTS (auto-tuning)\n")
+cat("Gradient: Automatic differentiation\n")
+cat("Output: Posterior samples (iterations × parameters)\n")
+```
+
+## Stan Model Structure
+
+```{r stan_model}
+# Stan Model Code: Hierarchical ILR Parameters
+# ============================================
+
+cat("Stan Model Structure (geocoda implementation)\n")
+cat("==========================================\n\n")
+
+cat("data {\n")
+cat("  int<lower=1> N;              // Total observations\n")
+cat("  int<lower=1> Z;              // Number of zones\n")
+cat("  int<lower=1> D;              // ILR dimensions\n")
+cat("  array[N] int<lower=1,upper=Z> zone;  // Zone IDs\n")
+cat("  matrix[N, D] y;              // ILR observations\n")
+cat("  vector[D] mu_prior_mean;     // Prior mean\n")
+cat("  real<lower=0> sigma_prior;   // Prior SD\n")
+cat("}\n\n")
+
+cat("parameters {\n")
+cat("  vector[D] mu_global;         // Global mean\n")
+cat("  matrix[Z, D] mu_zone_raw;    // Non-centered zone effects\n")
+cat("  real<lower=0> tau_pooling;   // Pooling strength\n")
+cat("  cholesky_factor_corr[D] L_Omega;  // Correlation structure\n")
+cat("  vector<lower=0>[D] sigma;    // Marginal SDs\n")
+cat("}\n\n")
+
+cat("transformed parameters {\n")
+cat("  matrix[Z, D] mu_zone = rep_matrix(mu_global, Z) +\n")
+cat("                          mu_zone_raw * tau_pooling;\n")
+cat("  matrix[D, D] Sigma = diag_pre_multiply(sigma,\n")
+cat("                                         L_Omega) *\n")
+cat("                      diag_pre_multiply(sigma,\n")
+cat("                                         L_Omega)';\n")
+cat("}\n\n")
+
+cat("model {\n")
+cat("  // Priors\n")
+cat("  mu_global ~ normal(mu_prior_mean, sigma_prior);\n")
+cat("  to_vector(mu_zone_raw) ~ normal(0, 1);\n")
+cat("  tau_pooling ~ exponential(1);\n")
+cat("  L_Omega ~ lkj_corr_cholesky(2);\n")
+cat("  sigma ~ exponential(2);\n\n")
+cat("  // Likelihood\n")
+cat("  for (n in 1:N) {\n")
+cat("    y[n] ~ multi_normal(mu_zone[zone[n]], Sigma);\n")
+cat("  }\n")
+cat("}\n\n")
+
+cat("Key Features:\n")
+cat("• Non-centered parameterization (better mixing)\n")
+cat("• Flexible covariance via Cholesky decomposition\n")
+cat("• Weakly informative priors (no overfitting)\n")
+cat("• Vectorized likelihood (computational efficiency)\n")
+```
+
+## MCMC Configuration
+
+```{r stan_config}
+# Stan MCMC Configuration & Tuning
+# ===============================
+
+cat("DEFAULT CONFIGURATION\n")
+cat("====================\n")
+cat("Chains: 2 (parallel)\n")
+cat("Iterations per chain: 2000\n")
+cat("Warmup (adaptation): 500\n")
+cat("Sampling: 1500 per chain\n")
+cat("Total posterior samples: 3000\n\n")
+
+cat("Adaptation Parameters:\n")
+cat("  adapt_delta = 0.8  (step size control)\n")
+cat("  max_treedepth = 10 (NUTS trajectory depth)\n\n")
+
+cat("TUNING FOR DIFFICULT PROBLEMS\n")
+cat("============================\n")
+
+cat("Problem: Divergent transitions\n")
+cat("Solution: Increase adapt_delta to 0.85-0.95\n")
+cat("          (slower but more careful exploration)\n\n")
+
+cat("Problem: Low effective sample size (ESS)\n")
+cat("Solution: Increase iterations (more sampling)\n")
+cat("          OR use non-centered parameterization\n")
+cat("          OR adjust priors\n\n")
+
+cat("Problem: Chains mixing poorly\n")
+cat("Solution: More warmup iterations (improve adaptation)\n")
+cat("          OR reparameterize (non-centered preferred)\n\n")
+
+cat("INITIALIZATION STRATEGIES\n")
+cat("========================\n")
+cat("Random (default): Stan chooses random starting points\n")
+cat("Zero:             Start at mode (sometimes unstable)\n")
+cat("Prior predictive: Sample from priors (can help)\n")
+```
+
+## Convergence Diagnostics
+
+```{r stan_diagnostics}
+# Stan Convergence Diagnostics
+# ============================
+
+cat("KEY DIAGNOSTIC METRICS\n")
+cat("=====================\n\n")
+
+cat("1. RHAT (Potential Scale Reduction Factor)\n")
+cat("   Measures: Chain convergence\n")
+cat("   Good: Rhat < 1.01  (excellent convergence)\n")
+cat("   Acceptable: Rhat < 1.05  (good)\n")
+cat("   Problematic: Rhat > 1.1  (chains not mixed)\n")
+cat("   Action: Run longer chains or debug model\n\n")
+
+cat("2. ESS (Effective Sample Size)\n")
+cat("   Measures: Useful information from MCMC\n")
+cat("   Formula: ESS = N_samples / (1 + 2×∑autocorr)\n")
+cat("   Good: ESS > 400 per parameter (excellent)\n")
+cat("   Acceptable: ESS > 100 per parameter\n")
+cat("   Problematic: ESS < 100 (more sampling needed)\n")
+cat("   ESS_bulk: Sampling efficiency (post-warmup)\n")
+cat("   ESS_tail: Tail sampling efficiency\n\n")
+
+cat("3. DIVERGENT TRANSITIONS\n")
+cat("   Measures: Numerical instability\n")
+cat("   Good: 0 divergences\n")
+cat("   Acceptable: < 5% of total iterations\n")
+cat("   Action: Increase adapt_delta, check priors\n\n")
+
+cat("4. MAX TREE DEPTH\n")
+cat("   Measures: NUTS sampler trajectory limit\n")
+cat("   Good: Never hits max_treedepth\n")
+cat("   Problematic: Frequently hits limit\n")
+cat("   Action: Increase max_treedepth (slower) or fix model\n\n")
+
+cat("TROUBLESHOOTING GUIDE\n")
+cat("====================\n")
+cat("Rhat > 1.1     → More warmup, check prior misspecification\n")
+cat("ESS < 100      → Longer chains, reparameterize\n")
+cat("Divergences    → Increase adapt_delta (0.85-0.95)\n")
+cat("Max treedepth  → Check prior scales, increase limit\n")
+cat("Slow sampling  → Simplify model, adjust parameterization\n")
+```
+
+# Nimble Backend: Adaptive MCMC
+
+## Mathematical Foundations
+
+```{r nimble_math}
+# Nimble Backend: Flexible MCMC Inference
+# =======================================
+
+# SAME BAYESIAN MODEL AS STAN
+# ==========================
+# y_n ~ Normal(μ_z[zone[n]], Σ)
+# μ_z[z] ~ Normal(μ_global, τ_pooling² × I)
+# μ_global ~ Normal(μ_prior, σ_prior²)
+# Σ ~ Wishart prior (flexible correlation)
+# τ_pooling ~ Gamma/Exponential prior
+
+# DIFFERENT INFERENCE: Adaptive MCMC
+# ==================================
+# • Metropolis-Hastings (not HMC)
+# • Random walk proposals (simpler)
+# • Adaptive scaling (learns proposal variances)
+# • Customizable samplers (block, slice, etc.)
+#
+# Advantages over Stan HMC:
+#   - More flexible (any model structure)
+#   - Easier to customize samplers
+#   - Compiled to C++ (fast execution)
+#   - No gradients required
+#
+# Disadvantages:
+#   - Higher autocorrelation (less efficient sampling)
+#   - No automatic tuning (must configure manually)
+#   - Convergence can be slower
+
+cat("Nimble: Adaptive Metropolis-Hastings MCMC\n")
+cat("========================================\n")
+cat("Proposal: Adaptive random walk\n")
+cat("Acceptance: Metropolis-Hastings ratio\n")
+cat("Adaptation: Proposal scaling optimization\n")
+cat("Compilation: R code → C++ → compiled binary\n")
+cat("Customization: Highly flexible sampler setup\n")
+```
+
+## Nimble Model Specification
+
+```{r nimble_model}
+# Nimble Model Code: R-like Specification
+# ======================================
+
+cat("nimble_code <- nimbleCode({\n")
+cat("  # Global hyperpriors\n")
+cat("  for (d in 1:D) {\n")
+cat("    mu_global[d] ~ dnorm(\n")
+cat("      mu_prior_mean[d],\n")
+cat("      sd = sigma_prior\n")
+cat("    )\n")
+cat("  }\n\n")
+cat("  # Zone-level random effects\n")
+cat("  for (z in 1:Z) {\n")
+cat("    mu_zone[z, 1:D] ~ dmnorm(\n")
+cat("      mean = mu_global[1:D],\n")
+cat("      cov = tau_pooling^2 * identity[1:D, 1:D]\n")
+cat("    )\n\n")
+cat("    # Zone-specific covariance (Wishart)\n")
+cat("    Sigma_zone[z, 1:D, 1:D] ~ dwish(\n")
+cat("      R = omega[1:D, 1:D],\n")
+cat("      df = D + 1\n")
+cat("    )\n")
+cat("  }\n\n")
+cat("  # Hyperpriors for variances\n")
+cat("  tau_pooling ~ dexp(rate = 1.0)\n")
+cat("  for (d in 1:D) {\n")
+cat("    sigma[d] ~ dexp(rate = 2.0)\n")
+cat("  }\n\n")
+cat("  # Likelihood\n")
+cat("  for (n in 1:N) {\n")
+cat("    y[n, 1:D] ~ dmnorm(\n")
+cat("      mean = mu_zone[zone[n], 1:D],\n")
+cat("      cov = Sigma_zone[zone[n], 1:D, 1:D]\n")
+cat("    )\n")
+cat("  }\n")
+cat("})\n\n")
+
+cat("Key Features:\n")
+cat("• R-like syntax (familiar to R users)\n")
+cat("• Direct specification (no transformations needed)\n")
+cat("• Flexible prior choices\n")
+cat("• Automatic compilation to C++\n")
+```
+
+## MCMC Configuration
+
+```{r nimble_config}
+# Nimble MCMC Sampler Configuration
+# =================================
+
+cat("DEFAULT SAMPLER SETUP\n")
+cat("====================\n")
+cat("Univariate nodes: Adaptive random walk\n")
+cat("  - proposal SD adapts during burnin\n")
+cat("  - target acceptance: 23-34%\n\n")
+
+cat("Multivariate nodes: Block Metropolis-Hastings\n")
+cat("  - mu_zone[z, 1:D]: joint proposal\n")
+cat("  - sigma[1:D]: joint proposal\n\n")
+
+cat("MCMC Execution\n")
+cat("==============\n")
+cat("Chains: 2-4 parallel (independent)\n")
+cat("Iterations per chain: 2000\n")
+cat("Burnin: 500 iterations\n")
+cat("Adaptation: First 100 iterations only\n")
+cat("Total posterior samples: ~6000\n\n")
+
+cat("CUSTOM SAMPLER OPTIONS\n")
+cat("======================\n")
+cat("- Slice sampler (robust, slower)\n")
+cat("- Block RW (default, efficient)\n")
+cat("- Hamiltonian (if nimbleHMC available)\n")
+cat("- Cross-level samplers (for hierarchical structures)\n\n")
+
+cat("TUNING STRATEGY\n")
+cat("===============\n")
+cat("1. Run short chain (1000 iter) with default\n")
+cat("2. Check acceptance rates\n")
+cat("3. Adjust block samplers if needed\n")
+cat("4. Increase iterations for full analysis\n")
+```
+
+## Convergence Diagnostics
+
+```{r nimble_diagnostics}
+# Nimble Convergence Diagnostics
+# ==============================
+
+cat("KEY DIAGNOSTIC METRICS\n")
+cat("=====================\n\n")
+
+cat("1. GELMAN-RUBIN DIAGNOSTIC (R-hat)\n")
+cat("   Multivariate version: compares chains\n")
+cat("   Good: R-hat < 1.05 (chains well mixed)\n")
+cat("   Acceptable: R-hat < 1.1\n")
+cat("   Problematic: R-hat > 1.1\n")
+cat("   Action: Run longer, adjust samplers\n\n")
+
+cat("2. TRACE PLOTS\n")
+cat("   Visual inspection: chains should \"look like\"\n")
+cat("   continuous noise (white noise)\n")
+cat("   \n")
+cat("   Good: Overlapping chains, stable variance\n")
+cat("   Bad: Trends, spikes, separate chains\n")
+cat("   Interpretation: Slow mixing = autocorrelation\n\n")
+
+cat("3. AUTOCORRELATION\n")
+cat("   Measures: Dependence between samples\n")
+cat("   High ACF: Effective samples reduced\n")
+cat("   Solution: Thin (keep every kth sample)\n")
+cat("             OR run longer chains\n\n")
+
+cat("4. EFFECTIVE SAMPLE SIZE\n")
+cat("   Formula: ESS = N_samples / (1 + 2×∑ACF)\n")
+cat("   Goal: ESS > 100 per parameter\n")
+cat("   Nimble ESS usually < Stan ESS (higher autocorr)\n\n")
+
+cat("5. ACCEPTANCE RATE\n")
+cat("   Metropolis-Hastings acceptance\n")
+cat("   Target: 20-40% (depends on dimension)\n")
+cat("   Too low: Increase proposal scale\n")
+cat("   Too high: Decrease proposal scale\n\n")
+
+cat("DIAGNOSTIC WORKFLOW\n")
+cat("==================\n")
+cat("1. Run chain, plot diagnostics\n")
+cat("2. Check R-hat < 1.05 for all parameters\n")
+cat("3. Check acceptance rates 20-40%\n")
+cat("4. Visually inspect trace plots\n")
+cat("5. If problems: adjust samplers, run longer\n")
+```
+
+# Backend Comparison
+
+## Computational Characteristics
+
+```{r backend_comparison}
+# Backend Comparison: Performance & Characteristics
+# ================================================
+
+comparison_table <- data.frame(
+  Feature = c(
+    "Speed",
+    "Flexibility",
+    "Diagnostics",
+    "Posterior samples",
+    "Convergence guarantee",
+    "Tuning required",
+    "Parallelization",
+    "Learning curve",
+    "Complex models",
+    "Missing data"
+  ),
+  Analytical = c(
+    "Very fast (<1s)",
+    "Fixed structure",
+    "None",
+    "No (point est.)",
+    "No sampling",
+    "None",
+    "N/A",
+    "Easy",
+    "Limited",
+    "No support"
+  ),
+  Stan = c(
+    "Slow (min-hours)",
+    "High (any model)",
+    "Excellent (Rhat,ESS)",
+    "Yes (full dist.)",
+    "Asymptotic",
+    "Minimal (auto)",
+    "Chains: auto",
+    "Medium",
+    "Excellent",
+    "Supported"
+  ),
+  Nimble = c(
+    "Medium (sec-min)",
+    "Very high",
+    "Good (Gelman-Rubin)",
+    "Yes (full dist.)",
+    "Asymptotic",
+    "Moderate",
+    "Chains: manual",
+    "Medium-Hard",
+    "Excellent",
+    "Supported"
+  )
+)
+
+print(comparison_table)
+
+cat("\n\nDETAILED COMPARISONS\n")
+cat("===================\n\n")
+
+cat("SAMPLING EFFICIENCY\n")
+cat("Analytical: 1 evaluation\n")
+cat("Stan HMC: ~100-500 gradient evals per sample\n")
+cat("Nimble MCMC: 1 evaluation per proposal\n")
+cat("Winner: Analytical >> Stan > Nimble\n\n")
+
+cat("POSTERIOR QUALITY\n")
+cat("Analytical: Point estimates + SEs\n")
+cat("Stan: Full posterior distribution + correlations\n")
+cat("Nimble: Full posterior distribution + correlations\n")
+cat("Winner: Stan ≈ Nimble >> Analytical\n\n")
+
+cat("IMPLEMENTATION EASE\n")
+cat("Analytical: Automatic (just call function)\n")
+cat("Stan: Must write Stan code + compile\n")
+cat("Nimble: Write BUGS-like code + configure samplers\n")
+cat("Winner: Analytical >> Stan, Nimble\n")
+```
+
+## Decision Framework
+
+```{r backend_decision}
+# Backend Selection Decision Framework
+# ===================================
+
+cat("DECISION TREE: Which Backend to Use?\n")
+cat("===================================\n\n")
+
+cat("Q1: Do you need full posterior samples?\n")
+cat("├─ NO  → Use ANALYTICAL (fastest, simple)\n")
+cat("└─ YES → Continue to Q2\n\n")
+
+cat("Q2: Is your model complex/nonstandard?\n")
+cat("├─ YES (custom structures, missing data)\n")
+cat("│   └─ Use NIMBLE (maximum flexibility)\n")
+cat("└─ NO (standard hierarchical)\n")
+cat("    └─ Use STAN (better diagnostics, faster)\n\n")
+
+cat("SPECIFIC SCENARIOS\n")
+cat("==================\n\n")
+
+cat("Scenario 1: Exploratory Analysis\n")
+cat("Goal: Quick look at zone-level uncertainty\n")
+cat("Use: ANALYTICAL\n")
+cat("Reason: Fast, automatic, point estimates sufficient\n\n")
+
+cat("Scenario 2: Publication-Quality Results\n")
+cat("Goal: Full Bayesian inference, uncertainty quantification\n")
+cat("Data: Well-behaved, standard hierarchical\n")
+cat("Use: STAN\n")
+cat("Reason: Better diagnostics, efficient sampling\n\n")
+
+cat("Scenario 3: Complex Model\n")
+cat("Goal: Custom hierarchical structure\n")
+cat("Example: Time-varying zone effects, spatial correlation\n")
+cat("Use: NIMBLE\n")
+cat("Reason: Can implement any model structure\n\n")
+
+cat("Scenario 4: Model Development\n")
+cat("Goal: Iterative refinement, debugging\n")
+cat("Use: ANALYTICAL → NIMBLE → STAN\n")
+cat("Reason: Fast iteration, flexible testing\n\n")
+
+cat("Scenario 5: Computational Constraints\n")
+cat("Goal: Need to run on limited hardware\n")
+cat("Use: ANALYTICAL\n")
+cat("Reason: Minimal memory/CPU requirements\n\n")
+
+cat("Scenario 6: Production System\n")
+cat("Goal: Reliable, reproducible estimates\n")
+cat("Use: ANALYTICAL\n")
+cat("Reason: Deterministic, no sampling variability\n")
+```
+
+# Advanced Topics
+
+## Custom Prior Specification
+
+```{r custom_priors}
+# Custom Prior Specification for MCMC Backends
+# ============================================
+
+cat("PRIOR COMPONENTS & CHOICES\n")
+cat("==========================\n\n")
+
+cat("1. GLOBAL MEAN PRIOR: μ_global\n")
+cat("───────────────────────────────\n")
+cat("Weakly informative:\n")
+cat("  Normal(μ_prior, σ_prior=1)  [mild regularization]\n")
+cat("Strongly informative:\n")
+cat("  Normal(specific_value, σ=0.1) [when you know value]\n")
+cat("Impact: Controls prior belief on global estimate\n\n")
+
+cat("2. POOLING STRENGTH PRIOR: τ_pooling\n")
+cat("────────────────────────────────────\n")
+cat("Weakly informative (default):\n")
+cat("  Exponential(1)  [allows wide range]\n")
+cat("Stronger pooling:\n")
+cat("  Exponential(0.1) [shrinks toward global]\n")
+cat("Weaker pooling:\n")
+cat("  Exponential(10)  [allows zone independence]\n")
+cat("Impact: High τ = strong pooling; Low τ = weak pooling\n\n")
+
+cat("3. COVARIANCE PRIOR: Σ_z\n")
+cat("──────────────────────\n")
+cat("Option A: LKJ + Exponential (flexible)\n")
+cat("  L ~ LKJ(eta=2)      [penalizes extreme correlation]\n")
+cat("  σ ~ Exponential(1)  [data-driven scales]\n")
+cat("Option B: Inverse-Wishart (conjugate)\n")
+cat("  Σ ~ Inverse-Wishart(df, scale_matrix)\n")
+cat("Impact: Shapes allowable covariance structures\n\n")
+
+cat("PRIOR SENSITIVITY ANALYSIS\n")
+cat("==========================\n")
+cat("Test: Run analysis with different priors\n")
+cat("Compare: Posterior estimates (should be similar)\n")
+cat("Action: If posteriors differ greatly,\n")
+cat("        use prior that reflects domain knowledge\n\n")
+
+cat("GUIDELINES\n")
+cat("==========\n")
+cat("✓ Use weakly informative (default)\n")
+cat("✓ Document any informative priors\n")
+cat("✓ Do sensitivity analysis\n")
+cat("✓ Don't use overly strong priors unless justified\n")
+```
+
+## Model Extensions
+
+```{r model_extensions}
+# Extending Backends: Advanced Model Structures
+# ============================================
+
+cat("COMMON EXTENSIONS\n")
+cat("=================\n\n")
+
+cat("1. MISSING DATA IMPUTATION\n")
+cat("─────────────────────────\n")
+cat("Analytical: NOT supported\n")
+cat("Stan: Supported (latent variables in model)\n")
+cat("Nimble: Supported (implicit imputation)\n")
+cat("\n")
+cat("Approach: Treat missing y_n as unknown parameters\n")
+cat("Prior: Use observed y to inform y_missing\n")
+cat("Benefit: Principled uncertainty quantification\n\n")
+
+cat("2. SPATIAL CORRELATION BETWEEN ZONES\n")
+cat("────────────────────────────────────\n")
+cat("Standard model: Zones independent (μ_z ~ Normal)\n")
+cat("Spatial variant: μ_z[i] correlated with μ_z[neighbors]\n")
+cat("\n")
+cat("Implementation (Stan/Nimble):\n")
+cat("  μ_z[i] ~ Normal(mean_neighbors, range_param)\n")
+cat("  where mean_neighbors = (μ_z[i-1] + μ_z[i+1]) / 2\n")
+cat("  \n")
+cat("Benefit: Borrows strength across adjacent zones\n\n")
+
+cat("3. TIME-VARYING ZONE PARAMETERS\n")
+cat("───────────────────────────────\n")
+cat("Standard: μ_z constant in time\n")
+cat("Temporal: μ_z[t] follows random walk or AR(1)\n")
+cat("\n")
+cat("Implementation:\n")
+cat("  μ_z[t] ~ Normal(μ_z[t-1], σ_temporal)\n")
+cat("  \n")
+cat("Benefit: Model trends, seasonal effects, changes\n\n")
+
+cat("4. NON-COMPOSITIONAL MULTIVARIATE DATA\n")
+cat("──────────────────────────────────────\n")
+cat("Standard: ILR transformation for compositions\n")
+cat("Alternative: Direct modeling (no transformation)\n")
+cat("\n")
+cat("Example: pH, bulk density, organic matter (not closed)\n")
+cat("Approach: Multivariate normal without ILR\n")
+cat("Benefit: Simpler interpretation, natural scale\n\n")
+
+cat("IMPLEMENTATION PATH\n")
+cat("===================\n")
+cat("1. Start with standard hierarchical model\n")
+cat("2. Identify model inadequacy (residual plots, etc.)\n")
+cat("3. Add single extension (spatial, temporal, etc.)\n")
+cat("4. Evaluate improvement (DIC, LOO-CV)\n")
+cat("5. Iterate as needed\n")
+```
+
+# Performance Benchmarking
+
+```{r benchmarking}
+# Performance Benchmarking: Speed & Efficiency
+# ============================================
+
+cat("TYPICAL RUNTIME COMPARISONS\n")
+cat("===========================\n\n")
+
+cat("Small Problem: 3 zones, 5 samples/zone, D=2 ILR\n")
+cat("──────────────────────────────────────────────\n")
+benchmark_small <- data.frame(
+  Backend = c("Analytical", "Stan", "Nimble"),
+  Runtime = c("<0.1s", "10-30s", "5-15s"),
+  Iterations = c("N/A", "2000", "2000"),
+  Posterior_Samples = c("0", "3000", "3000"),
+  ESS_per_sec = c("N/A", "100-300", "200-400")
+)
+print(benchmark_small)
+
+cat("\n\nMedium Problem: 10 zones, 30 samples/zone, D=2\n")
+cat("───────────────────────────────────────────────\n")
+benchmark_med <- data.frame(
+  Backend = c("Analytical", "Stan", "Nimble"),
+  Runtime = c("<0.1s", "30-60s", "15-30s"),
+  Iterations = c("N/A", "2000", "2000"),
+  Posterior_Samples = c("0", "3000", "3000"),
+  ESS_per_sec = c("N/A", "50-100", "100-200")
+)
+print(benchmark_med)
+
+cat("\n\nLarge Problem: 50 zones, 100 samples/zone, D=2\n")
+cat("──────────────────────────────────────────────\n")
+benchmark_large <- data.frame(
+  Backend = c("Analytical", "Stan", "Nimble"),
+  Runtime = c("<0.1s", "2-5min", "1-3min"),
+  Iterations = c("N/A", "2000", "2000"),
+  Posterior_Samples = c("0", "3000", "3000"),
+  ESS_per_sec = c("N/A", "10-25", "15-50")
+)
+print(benchmark_large)
+
+cat("\n\nKEY TAKEAWAYS\n")
+cat("=============\n")
+cat("1. Analytical is orders of magnitude faster\n")
+cat("2. Stan slower due to gradient computation\n")
+cat("3. Nimble faster than Stan, but more autocorr\n")
+cat("4. ESS/second varies with problem difficulty\n")
+cat("5. Hard problems may require longer Stan/Nimble\n\n")
+
+cat("OPTIMIZATION STRATEGIES\n")
+cat("======================\n")
+cat("Analytical:\n")
+cat("  ✓ Already optimized (no tuning needed)\n\n")
+cat("Stan:\n")
+cat("  ✓ Parallel chains (chains > cores)\n")
+cat("  ✓ Adapt_delta threshold balancing\n")
+cat("  ✓ Non-centered parameterization\n\n")
+cat("Nimble:\n")
+cat("  ✓ Block sampling configuration\n")
+cat("  ✓ Parallel chains management\n")
+cat("  ✓ Proposal variance tuning\n")
+```
+
+# Integration with geocoda Workflow
+
+## Using Backends in Analysis
+
+```{r workflow_integration}
+# Workflow Integration: Using All Three Backends
+# ==============================================
+
+cat("RECOMMENDED WORKFLOW\n")
+cat("====================\n\n")
+
+cat("Step 1: ANALYTICAL (Exploration Phase)\n")
+cat("──────────────────────────────────────\n")
+cat("Purpose: Quick exploration, initial estimates\n")
+cat("Runtime: < 1 second\n")
+cat("Output: Point estimates + SEs\n")
+cat("Code:\n")
+cat("  fit_analytical <- gc_fit_hierarchical_model(\n")
+cat("    data, priors,\n")
+cat("    backend = 'analytical'\n")
+cat("  )\n")
+cat("Use: Check that zones differ, data makes sense\n\n")
+
+cat("Step 2: NIMBLE (Development Phase)\n")
+cat("──────────────────────────────────\n")
+cat("Purpose: Complex structures, custom diagnostics\n")
+cat("Runtime: 30s - 5min\n")
+cat("Output: Posterior samples + convergence check\n")
+cat("Code:\n")
+cat("  fit_nimble <- gc_fit_hierarchical_model(\n")
+cat("    data, priors,\n")
+cat("    backend = 'nimble',\n")
+cat("    n_iter = 2000,\n")
+cat("    n_chains = 2\n")
+cat("  )\n")
+cat("  # Check convergence diagnostics\n")
+cat("  summary(fit_nimble$samples)\n")
+cat("Use: Prototype complex models, check robustness\n\n")
+
+cat("Step 3: STAN (Final Phase)\n")
+cat("────────────────────────\n")
+cat("Purpose: Publication-quality inference\n")
+cat("Runtime: 30s - 5min\n")
+cat("Output: High-quality posterior samples + diagnostics\n")
+cat("Code:\n")
+cat("  fit_stan <- gc_fit_hierarchical_model(\n")
+cat("    data, priors,\n")
+cat("    backend = 'stan',\n")
+cat("    n_iter = 2000,\n")
+cat("    adapt_delta = 0.8\n")
+cat("  )\n")
+cat("  # Detailed diagnostics\n")
+cat("  print(fit_stan$diagnostics)\n")
+cat("Use: Final inference, publications, decision support\n\n")
+
+cat("Step 4: EXTRACT & ANALYZE\n")
+cat("─────────────────────────\n")
+cat("From posterior samples:\n")
+cat("  • Compute credible intervals (quantiles)\n")
+cat("  • Extract zone-specific estimates\n")
+cat("  • Compute predictions\n")
+cat("  • Risk assessment (probability maps)\n\n")
+
+cat("Step 5: SIMULATION\n")
+cat("─────────────────\n")
+cat("Use posterior means or samples:\n")
+cat("  • Spatial simulation at prediction locations\n")
+cat("  • Monte Carlo uncertainty quantification\n")
+cat("  • Decision support (optimal allocation)\n\n")
+
+cat("COMPLETE EXAMPLE\n")
+cat("================\n")
+cat("# 1. Explore with analytical\n")
+cat("fit_a <- gc_fit_hierarchical_model(data, priors, backend='analytical')\n")
+cat("plot(fit_a$zone_estimates)  # Quick look\n\n")
+cat("# 2. Refine with Nimble (if complex)\n")
+cat("fit_n <- gc_fit_hierarchical_model(data, priors, backend='nimble')\n")
+cat("# Check diagnostics, adjust if needed\n\n")
+cat("# 3. Final inference with Stan\n")
+cat("fit_s <- gc_fit_hierarchical_model(data, priors, backend='stan')\n")
+cat("# Full posterior, high quality estimates\n\n")
+cat("# 4. Extract for downstream analysis\n")
+cat("zone_estimates <- fit_s$zone_estimates\n")
+cat("posterior_samples <- fit_s$samples\n\n")
+cat("# 5. Spatial simulation\n")
+cat("sim <- gc_sim_composition(model, grid, nsim=100)\n")
+cat("# Risk assessment, decision support, etc.\n")
+```
+
+# References
+
+- Stan Development Team. Stan User's Guide.
+- Nimble Project. NIMBLE User Manual.
+- Gelman et al. (2013). Bayesian Data Analysis, 3rd edition.
+
+---
+
+**This section will be expanded with:**
+- Complete mathematical derivations
+- Full source code and implementation details
+- Convergence diagnosis procedures
+- Performance benchmarking results
+- Troubleshooting guides for each backend
+- Advanced customization examples

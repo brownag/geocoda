@@ -33,6 +33,15 @@ This vignette covers:
 4. **Zone-based simulation** - Spatial structure within and between zones
 5. **When to use each backend** - Decision framework
 
+## How This Vignette Fits In
+
+**Prerequisites:** Familiarize yourself with Vignette 00 (Complete Workflow) first
+
+**After this vignette:**
+- See Vignette 08 for detailed backend comparisons and performance
+- See Vignette 02 for ensemble analysis techniques to use with hierarchical results
+- See Vignette 10 for 3D hierarchical modeling (adds depth dimension)
+
 # Setup
 
 ```{r, message=FALSE}
@@ -47,47 +56,65 @@ set.seed(42)
 
 ## Define Zones with Varying Properties
 
+Real-world example: Three landscape zones (upland, midslope, lowland) with different parent materials and weathering conditions:
+
 ```{r zones_setup}
 # Create three zones with distinct compositional properties
+# Upland: Sandy soils (residual from granite, well-drained)
 zone_upland <- data.frame(
   zone = "Upland",
-  x = c(10, 20, 30, 15, 25),
-  y = c(10, 20, 30, 25, 15),
-  SAND = c(70, 75, 68, 72, 69),
-  SILT = c(20, 15, 25, 18, 22),
-  CLAY = c(10, 10, 7, 10, 9)
+  x = c(10, 20, 30, 15, 25, 12, 28),
+  y = c(10, 20, 30, 25, 15, 18, 22),
+  SAND = c(70, 75, 68, 72, 69, 71, 70),
+  SILT = c(20, 15, 25, 18, 22, 19, 20),
+  CLAY = c(10, 10, 7, 10, 9, 10, 10)
 )
 
+# Midslope: Loamy soils (colluvial, moderate drainage)
 zone_midslope <- data.frame(
   zone = "Midslope",
-  x = c(50, 60, 70, 55, 65),
-  y = c(50, 60, 70, 65, 55),
-  SAND = c(45, 48, 50, 46, 49),
-  SILT = c(35, 35, 32, 36, 34),
-  CLAY = c(20, 17, 18, 18, 17)
+  x = c(50, 60, 70, 55, 65, 52, 68),
+  y = c(50, 60, 70, 65, 55, 58, 62),
+  SAND = c(45, 48, 50, 46, 49, 44, 48),
+  SILT = c(35, 35, 32, 36, 34, 38, 34),
+  CLAY = c(20, 17, 18, 18, 17, 18, 18)
 )
 
+# Lowland: Clay-rich soils (alluvial, poor drainage)
 zone_lowland <- data.frame(
   zone = "Lowland",
-  x = c(80, 90, 95, 85, 92),
-  y = c(80, 90, 95, 85, 92),
-  SAND = c(30, 25, 28, 32, 26),
-  SILT = c(35, 40, 38, 36, 39),
-  CLAY = c(35, 35, 34, 32, 35)
+  x = c(80, 90, 95, 85, 92, 82, 98),
+  y = c(80, 90, 95, 85, 92, 88, 92),
+  SAND = c(30, 25, 28, 32, 26, 29, 27),
+  SILT = c(35, 40, 38, 36, 39, 35, 36),
+  CLAY = c(35, 35, 34, 32, 35, 36, 37)
 )
 
 all_zones <- rbind(zone_upland, zone_midslope, zone_lowland)
 
-# Examine zone-specific statistics
-cat("Upland - Mean sand:", mean(zone_upland$SAND), "%\n")
-cat("Midslope - Mean sand:", mean(zone_midslope$SAND), "%\n")
-cat("Lowland - Mean sand:", mean(zone_lowland$SAND), "%\n")
+zone_summary <- data.frame(
+  Zone = c("Upland", "Midslope", "Lowland"),
+  n_samples = c(nrow(zone_upland), nrow(zone_midslope), nrow(zone_lowland)),
+  Mean_Sand = c(mean(zone_upland$SAND), mean(zone_midslope$SAND), mean(zone_lowland$SAND)),
+  Mean_Clay = c(mean(zone_upland$CLAY), mean(zone_midslope$CLAY), mean(zone_lowland$CLAY)),
+  Interpretation = c("Sandy/coarse", "Loamy/balanced", "Clayey/fine")
+)
+
+zone_summary
+
+# Visualize zones spatially
+plot(all_zones$x, all_zones$y, col = c("brown", "darkgreen", "blue")[as.factor(all_zones$zone)],
+     pch = 16, cex = 2, main = "Three Landscape Zones",
+     xlab = "Easting", ylab = "Northing")
+legend("bottomright", legend = c("Upland", "Midslope", "Lowland"),
+       col = c("brown", "darkgreen", "blue"), pch = 16)
 ```
+
+**Scenario:** We have observations from three distinct landscape positions with different parent materials. Hierarchical modeling will estimate zone-specific properties while using global information to stabilize small zones.
 
 ## ILR Transformation per Zone
 
 ```{r zone_ilr}
-# Estimate ILR parameters globally and per-zone
 global_ilr <- gc_ilr_params(all_zones[, c("SAND", "SILT", "CLAY")])
 
 zone_ilr <- list()
@@ -96,13 +123,8 @@ for (zname in unique(all_zones$zone)) {
   zone_ilr[[zname]] <- gc_ilr_params(zone_data[, c("SAND", "SILT", "CLAY")])
 }
 
-cat("Global ILR mean:\n")
-print(global_ilr$mean)
-
-cat("\nZone-specific means:\n")
-for (zname in names(zone_ilr)) {
-  cat(zname, ":", zone_ilr[[zname]]$mean, "\n")
-}
+# Global ILR mean
+global_ilr$mean
 ```
 
 # Hierarchical Pooling
@@ -112,29 +134,30 @@ for (zname in names(zone_ilr)) {
 Zones with few samples have **high estimation variance**. Hierarchical modeling **pools** zone-specific and global estimates, weighted by sample size:
 
 ```{r shrinkage_concept}
-# Shrinkage formula: theta_zone = w * theta_zone + (1-w) * theta_global
-# where w = sample size / (sample size + shrinkage_strength)
+shrinkage_strength <- 0.5
 
-shrinkage_strength <- 0.5  # Tuning parameter (higher = more pooling)
-
+shrinkage_results <- data.frame()
 for (zname in unique(all_zones$zone)) {
   zone_data <- all_zones[all_zones$zone == zname, ]
   n_samples <- nrow(zone_data)
 
-  # Shrinkage weight
   w <- n_samples / (n_samples + shrinkage_strength)
 
-  # Shrunk estimate (for first ILR dimension)
   theta_zone <- zone_ilr[[zname]]$mean[1]
   theta_global <- global_ilr$mean[1]
   theta_shrink <- w * theta_zone + (1 - w) * theta_global
 
-  cat(zname, "- n=", n_samples, ", weight w=", round(w, 2), "\n")
-  cat("  Zone estimate:", round(theta_zone, 3), "\n")
-  cat("  Shrunk estimate:", round(theta_shrink, 3), "\n")
-  cat("  Change:", round(100 * (theta_shrink - theta_zone) / theta_zone, 1),
-      "%\n")
+  shrinkage_results <- rbind(shrinkage_results, data.frame(
+    Zone = zname,
+    n_samples = n_samples,
+    weight_w = round(w, 2),
+    zone_est = round(theta_zone, 3),
+    shrunk_est = round(theta_shrink, 3),
+    pct_change = round(100 * (theta_shrink - theta_zone) / theta_zone, 1)
+  ))
 }
+
+shrinkage_results
 ```
 
 **Key insight**: Data-poor zones (n=5) receive more pooling (w≈0.91) toward global estimate, while all zones benefit from global information.
@@ -143,20 +166,23 @@ for (zname in unique(all_zones$zone)) {
 
 ## Define Zone Hierarchy
 
+A three-level hierarchical structure:
+- **Level 1**: GLOBAL (all data pooled)
+- **Level 2**: ZONES (soil series or map units)
+- **Level 3**: SAMPLES (individual observations)
+
 ```{r zone_hierarchy}
-# Define hierarchical relationship: Global > Zones > Samples
-hierarchy <- gc_define_hierarchy(
-  zone_names = unique(all_zones$zone),
-  component_names = c("SAND", "SILT", "CLAY")
+example_zones <- data.frame(
+  Zone = c("Series_A", "Series_B", "Series_C"),
+  n_samples = c(25, 30, 20),
+  n_sites = c(5, 6, 4),
+  interpretation = c("Well-studied", "Well-studied", "Limited data")
 )
 
-# Set prior specification with pooling
-priors <- gc_set_hierarchy_priors(
-  hierarchy,
-  pooling = "moderate",     # Fixed pooling strength
-  shrinkage_strength = 0.5  # How much to pool toward global
-)
+example_zones
 ```
+
+**Pooling configuration**: The global mean μ_global provides a baseline from a weak prior (σ = 2%). Each zone μ_zone shrinks toward this global estimate with strength controlled by τ_pooling. Higher pooling strength (smaller τ) means zones are pulled more toward the global estimate.
 
 ## Three Backend Options
 
@@ -259,10 +285,10 @@ comparison <- data.frame(
   )
 )
 
-print(comparison)
-
-cat("\nRecommendation: START with Analytical, switch to Stan if needed\n")
+comparison
 ```
+
+**Recommendation**: Start with Analytical backend for initial exploration. Switch to Stan if you need full posterior samples and real convergence diagnostics (Rhat, ESS).
 
 # Zone-Based Simulation
 
@@ -294,7 +320,7 @@ pred_grid_sf <- st_as_sf(
   coords = c("x", "y")
 )
 
-cat("Prediction grid:", nrow(pred_grid), "points across 3 zones\n")
+paste("Prediction grid:", nrow(pred_grid), "points across 3 zones")
 ```
 
 ```{r zone_sim_workflow, eval=FALSE}

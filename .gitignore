@@ -6,4 +6,5 @@
 *.Rproj
 .github/development/
 *.html
-docs
+docs/
+scratch/

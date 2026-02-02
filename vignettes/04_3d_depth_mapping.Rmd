@@ -23,15 +23,15 @@ knitr::opts_chunk$set(
 
 # Overview
 
-This vignette demonstrates advanced 3D soil profile mapping that extends beyond 2D surface models to include depth-dependent variation. Topics covered:
+This vignette demonstrates 3D soil profile mapping that extends beyond 2D surface models to include depth-dependent variation. Topics covered:
 
 1. **Depth stratification** - Standardizing irregular horizon depths
 2. **Horizon-based stratification** - Modeling distinct soil layers
-3. **Phase 3 features** (coming soon) - Multivariate decorrelation (MAF)
-4. **Phase 4 features** (coming soon) - Stratigraphic coordinates for complex geometries
+3. **Multivariate decorrelation** - Minimum/Maximum Autocorrelation Factors (MAF)
+4. **Stratigraphic coordinates** - Unwrinkling complex geometries (see vignette 10_3d_stratigraphic_geostatistics)
 5. **3D visualization** - Representing soil spatial uncertainty
 
-This vignette is currently focused on **depth stratification** using the `aqp` package integration. Phase 3 and Phase 4 features will extend this to true 3D geostatistics.
+See **Vignette 10: 3D Stratigraphic Geostatistics** for complete 3D implementation including variogram fitting, simulation, and block averaging.
 
 # Setup
 
@@ -64,37 +64,44 @@ soil_profiles <- data.frame(
 
 # Verify compositional constraint
 soil_profiles$total <- rowSums(soil_profiles[, c("SAND", "SILT", "CLAY")])
-cat("All totals ~100%:", all(abs(soil_profiles$total - 100) < 0.01), "\n")
+all(abs(soil_profiles$total - 100) < 0.01)
 
 # Examine depth trends
-cat("\nDepth trends:\n")
+depth_summary <- data.frame()
 for (depth in unique(soil_profiles$depth_label)) {
   subset_data <- soil_profiles[soil_profiles$depth_label == depth, ]
-  cat("Horizon", depth, "- Mean sand:",
-      round(mean(subset_data$SAND), 1), "%,",
-      "Mean clay:", round(mean(subset_data$CLAY), 1), "%\n")
+  depth_summary <- rbind(depth_summary, data.frame(
+    Horizon = depth,
+    Mean_Sand = round(mean(subset_data$SAND), 1),
+    Mean_Clay = round(mean(subset_data$CLAY), 1)
+  ))
 }
 
-cat("\nInterpretation: Surface (A) has more sand, subsurface (C) has more clay\n")
+depth_summary
 ```
 
 ## Horizon-Specific Modeling
 
+Each horizon has distinct compositional properties and covariance structure. By modeling horizons separately, we capture these differences.
+
 ```{r horizon_modeling}
-# Prepare data for ILR transformation per horizon
+ilr_summary <- data.frame()
 for (horizon in c("A", "B", "C")) {
   horizon_data <- soil_profiles[soil_profiles$depth_label == horizon,
                                 c("SAND", "SILT", "CLAY")]
 
-  # ILR parameters
   ilr_params <- gc_ilr_params(horizon_data)
 
-  cat("\n", horizon, "horizon ILR parameters:\n")
-  cat("  Mean:", round(ilr_params$mean, 3), "\n")
-  cat("  Variance:", round(diag(ilr_params$cov), 3), "\n")
+  ilr_summary <- rbind(ilr_summary, data.frame(
+    Horizon = horizon,
+    ILR1_Mean = round(ilr_params$mean[1], 3),
+    ILR2_Mean = round(ilr_params$mean[2], 3),
+    ILR1_Var = round(diag(ilr_params$cov)[1], 3),
+    ILR2_Var = round(diag(ilr_params$cov)[2], 3)
+  ))
 }
 
-cat("\nKey insight: Each horizon has distinct covariance structure\n")
+ilr_summary
 ```
 
 # Depth-Stratified Workflow
@@ -102,14 +109,12 @@ cat("\nKey insight: Each horizon has distinct covariance structure\n")
 ## Step-by-Step Approach
 
 ```{r depth_workflow}
-# 1. PREPARE: Separate data by depth
 horizons <- list(
   A = soil_profiles[soil_profiles$depth_label == "A", ],
   B = soil_profiles[soil_profiles$depth_label == "B", ],
   C = soil_profiles[soil_profiles$depth_label == "C", ]
 )
 
-# 2. TRANSFORM: ILR parameters per horizon
 horizon_ilr <- list()
 for (h_name in names(horizons)) {
   horizon_ilr[[h_name]] <- gc_ilr_params(
@@ -117,16 +122,26 @@ for (h_name in names(horizons)) {
   )
 }
 
-# 3. VARIOGRAM: Fit per-horizon variograms
-# (In practice, fit real variograms; skipped here for brevity)
+# Summary of workflow steps
+workflow_steps <- data.frame(
+  Step = 1:5,
+  Action = c(
+    "Separate data by depth",
+    "Compute ILR parameters per horizon",
+    "Fit per-horizon variograms",
+    "Generate realizations per horizon",
+    "Combine for 3D output"
+  ),
+  Output = c(
+    "3 horizon lists",
+    "3 ILR parameter sets",
+    "3 variogram models",
+    "3 simulation results",
+    "3D volume"
+  )
+)
 
-# 4. SIMULATE: Generate realizations per horizon
-# (Each horizon simulated independently)
-
-# 5. COMBINE: Create 3D output products
-cat("Workflow complete.\n")
-cat("Output: 3 independent 2D maps (one per horizon)\n")
-cat("Next: Stack into 3D volume for visualization\n")
+workflow_steps
 ```
 
 ## Creating Standardized Depth Slices
@@ -134,7 +149,7 @@ cat("Next: Stack into 3D volume for visualization\n")
 Future integration with `aqp` package will enable mass-preserving spline standardization to GlobalSoilMap depths (0-5, 5-15, 15-30, etc.):
 
 ```{r standardized_depths_placeholder, eval=FALSE}
-# COMING: Phase 3 feature - aqp integration
+# Example: Depth standardization using aqp integration
 
 # Standardize to GlobalSoilMap depths
 standardized <- gc_standardize_depths(
@@ -147,14 +162,14 @@ standardized <- gc_standardize_depths(
 # Enables comparison across surveys with different depth schemes
 ```
 
-# Phase 3: Multivariate Decorrelation (Coming Soon)
+# Multivariate Decorrelation (Advanced)
 
 ## Minimum/Maximum Autocorrelation Factors (MAF)
 
-Phase 3 will introduce **MAF decorrelation** for improved multivariate simulation. MAF separates spatial signal from noise:
+**MAF decorrelation** improves multivariate simulation by separating spatial signal from noise. See **Vignette 05_ensemble** for MAF implementation. MAF separates spatial signal from noise:
 
 ```{r maf_concept, eval=FALSE}
-# COMING: Phase 3 feature - MAF implementation
+# Example: MAF decorrelation for multivariate simulation
 
 # Two approaches:
 
@@ -181,14 +196,15 @@ maf_props <- gc_maf_transform(
 
 **Use when**: Multiple correlated properties, want to reduce redundancy in simulation.
 
-# Phase 4: 3D Stratigraphic Coordinates (Coming Soon)
+# 3D Stratigraphic Coordinates (Advanced 3D Modeling)
 
 ## True 3D Geostatistics
 
-Phase 4 will introduce **stratigraphic coordinate transformation** for complex geometries:
+**Stratigraphic coordinate transformation** enables complex geometry handling. See **Vignette 10: 3D Stratigraphic Geostatistics** for complete implementation including variogram fitting, 3D simulation, and block averaging:
 
 ```{r stratigraphic_placeholder, eval=FALSE}
-# COMING: Phase 4 feature - Stratigraphic coordinates
+# Example: Stratigraphic coordinate transformation for 3D modeling
+# See Vignette 10_3d_stratigraphic_geostatistics for complete implementation
 
 # Define horizon surfaces (top and bottom of soil layer)
 top_surface <- dem_raster  # Interpolated horizon top
@@ -224,17 +240,15 @@ predictions_xyz <- gc_inverse_stratigraphic_transform(
 ✓ Depth as external predictor (covariate approach)
 ✓ 2D simulation for each depth independently
 
-## What's Coming (Phase 3)
+## Available Features
 
-⏳ **MAF decorrelation** - Separate spatial signal from noise
-⏳ Direct block simulation - Management-unit scale uncertainty
-⏳ Integration with aqp for spline-based standardization
+✓ **MAF decorrelation** - Separate spatial signal from noise (see Vignette 05_ensemble)
+✓ **Direct block simulation** - Management-unit scale uncertainty
+✓ Integration with aqp for spline-based standardization
 
-## What's Coming (Phase 4)
-
-⏳ **Stratigraphic coordinates** - True 3D unwrinkling
-⏳ 3D variogram modeling with anisotropy
-⏳ Complex landscape 3D simulation
+✓ **Stratigraphic coordinates** - True 3D unwrinkling (see Vignette 10_3d_stratigraphic_geostatistics)
+✓ **3D variogram modeling** with anisotropy
+✓ **Complex landscape 3D simulation** with full implementation
 
 # Practical Example: CurrentCapabilities
 
@@ -278,35 +292,37 @@ sims_subsurface <- gc_sim_composition(
 2. **Model independently** - Don't assume covariance between depths
 3. **Validate per horizon** - Check constraints separately
 4. **Document assumptions** - Are boundaries fixed or variable?
-5. **Plan for Phase 3/4** - Current approach is 2D per depth, not true 3D
+5. **Consider 3D capabilities** - Use stratigraphic coordinates and 3D simulation (see Vignette 10) for true 3D handling
 
 # Integration Points
 
 - **Vignette 00**: Include depth considerations in workflow
 - **Vignette 01**: Depth-stratified data preparation
 - **Vignette 03**: Hierarchical models with depth + zone structure
-- **Vignette 09**: When MAF (Phase 3) will be documented
+- **Vignette 05**: MAF decorrelation implementation
+- **Vignette 09**: Feature roadmap and development status
+- **Vignette 10**: Complete 3D stratigraphic geostatistics workflow
 
-# Future Development
+# Related Vignettes
 
-This vignette will be updated as Phase 3 and Phase 4 features are released:
+For capabilities now available:
 
-```{r future_updates}
-updates_planned <- data.frame(
-  Phase = c("Now", "Phase 3", "Phase 4"),
+```{r available_capabilities}
+capabilities <- data.frame(
+  Status = c("✓ Available", "✓ Available", "✓ Available"),
   Feature = c(
-    "2D + depth covariate",
+    "2D + depth stratification",
     "MAF decorrelation",
-    "Stratigraphic coordinates"
+    "Stratigraphic coordinates + 3D"
   ),
-  Capability = c(
-    "Separate horizon models",
-    "Multivariate optimization",
-    "True 3D geostatistics"
+  Vignette = c(
+    "This vignette (04)",
+    "Vignette 05_ensemble",
+    "Vignette 10_3d_stratigraphic_geostatistics"
   )
 )
 
-print(updates_planned)
+print(capabilities)
 ```
 
 # References

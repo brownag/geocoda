@@ -68,18 +68,120 @@ Partial sill (maximum variogram value - nugget).
 - Must be positive
 - Often normalized to 1.0
 
-## Placeholder: Decision Tree
+## Step 1: Domain & Data Assessment
 
-```{r decision_tree, eval=FALSE}
-# COMING: Interactive parameter selection guide
+Before selecting parameters, assess your study domain and data characteristics:
 
-# Question flow:
-# 1. What is your domain size?
-# 2. How many samples do you have?
-# 3. What temporal/spatial resolution is needed?
-# 4. How smooth should predictions be?
+**Domain Size**:
+- < 1 km: Use range = 300 m (fine-scale local variation)
+- 1-10 km: Use range ≈ domain diagonal / 3 (e.g., 4.7 km for 10 km domain)
+- 10-100 km: Use range = 10-30 km (landscape-scale trends)
+- > 100 km: Use range = 50+ km (regional patterns)
 
-# Returns: Parameter recommendations with ranges
+**Sample Size**:
+- < 30 samples: High uncertainty, expect coarse spatial predictions
+- 30-100 samples: Moderate data, standard resolution
+- 100-500 samples: Good coverage, fine resolution possible
+- > 500 samples: Excellent, high-resolution mapping feasible
+
+**Desired Prediction Resolution**:
+- Coarse (100m+): Use larger range, sparse grid
+- Standard (10-100m): Use range/3, regular grid
+- Fine (< 10m): Use range/10, dense grid
+
+## Step 2: Parameter Recommendations
+
+### Variogram Parameters
+
+**Range Selection**:
+The range defines how far spatial correlation extends. Start with domain diagonal / 3, then adjust based on visual inspection of the empirical variogram.
+
+```{r range_example, eval=FALSE}
+# For 10 km domain with 75 samples
+domain_diagonal <- sqrt(10^2 + 10^2)  # ~14 km
+default_range <- domain_diagonal / 3   # ~4.7 km
+range_recommended <- c(3, 5, 6)  # Try this range in km
+```
+
+**Nugget Selection**:
+Represents measurement error plus fine-scale variation. Start with 0% for smooth fits. Increase to 10-20% if overfitting observed, decrease to 0-5% if under-fitting.
+
+**Psill**:
+Partial sill (variance amplitude) is automatically calculated from data covariance. Typically normalized to 1.0 for ILR coordinates. No manual tuning needed.
+
+### Kriging Parameters
+
+**Grid Resolution**:
+Cell size should be 0.5-2× typical sample spacing. For 10 km domain with 75 samples, spacing ≈ 1.2 km, so use grid cells of 0.6-1.2 km (practical: 1 km).
+
+```{r grid_resolution, eval=FALSE}
+n_samples <- 75
+domain_extent <- 10  # km
+sample_spacing <- domain_extent / sqrt(n_samples)  # ~1.2 km
+grid_resolution <- 0.5 * sample_spacing  # 0.6 km practical
+```
+
+**Neighbors (nmax)**:
+Start with 10-20 neighbors for kriging. Can increase to 30-50 for dense data, but keep < 100 for computational efficiency.
+
+## Step 3: Sensitivity Analysis
+
+Test how predictions respond to parameter changes. Vary range and compare prediction quality:
+
+```{r sensitivity_analysis, eval=FALSE}
+range_test <- c(2, 4, 6, 8, 10) * 1000  # meters
+cv_results <- data.frame()
+
+for (r in range_test) {
+  vgm <- gstat::vgm(psill = 1, model = "Exp", range = r, nugget = 0)
+  model <- gc_ilr_model(ilr_params, vgm)
+
+  # Evaluate model (e.g., cross-validation RMSE)
+  cv_error <- leave_one_out_cv(model, data)
+
+  cv_results <- rbind(cv_results, data.frame(
+    range_m = r,
+    cv_rmse = cv_error
+  ))
+}
+
+# Plot sensitivity
+plot(cv_results$range_m, cv_results$cv_rmse,
+     xlab = "Range (m)", ylab = "CV RMSE")
+```
+
+**Evaluation Metrics**:
+- Cross-validation RMSE: Lower is better
+- Leave-one-out CV: Robust measure of prediction error
+- Visual inspection: Do predicted patterns make sense?
+- Uncertainty reasonableness: Are confidence intervals appropriate?
+
+## Step 4: Final Parameter Selection
+
+**Best Practices**:
+1. Use default range (domain diagonal / 3) as starting point
+2. Adjust based on visual variogram inspection
+3. Consider domain knowledge about spatial processes
+4. Use cross-validation to optimize range
+5. Document all parameter choices with justification
+6. Report sensitivity analysis results
+
+**Documentation Template**:
+
+```r
+# Variogram parameters selected:
+# Model: Exponential
+# Range: 5 km
+#   Justification: domain_diagonal/3 = 4.7 km, CV-optimized
+# Nugget: 0.02 (2% of sill)
+#   Justification: Smooth fit preferred, minimal measurement error
+# Psill: 1.0
+#   Justification: ILR variance normalized
+
+# Kriging parameters:
+# nmax: 15 neighbors (sufficient for 10 km range)
+# cutoff: 15 km (3× range)
+# Grid resolution: 1 km × 1 km cells
 ```
 
 ## References

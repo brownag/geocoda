@@ -1,0 +1,375 @@
+---
+title: "Phase 4: 3D Geostatistics with Stratigraphic Coordinates"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Phase 4: 3D Geostatistics with Stratigraphic Coordinates}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 7,
+  fig.height = 5
+)
+```
+
+## Overview
+
+Phase 4 extends geocoda from 2D spatial geostatistics to full 3D pedogenic modeling with **stratigraphic coordinate transformations** and **3D geostatistics with geometric anisotropy**.
+
+This vignette demonstrates the complete workflow for:
+1. **Defining horizon surfaces** (top and bottom boundaries)
+2. **Stratigraphic coordinate transformation** (converting complex folded horizons to flat space)
+3. **3D variogram fitting** with separate horizontal and vertical ranges
+4. **3D simulation** and block-scale uncertainty quantification
+5. **Risk assessment** on 3D compositional predictions
+
+## Key Concepts
+
+### Stratigraphic Coordinates ("Unwrinkling")
+
+Real soil profiles often have sloping or folded horizons that violate spatial stationarity assumptions in Cartesian (x, y, z) space. Stratigraphic coordinates "unwrap" these horizons into parallel surfaces:
+
+- **Input**: Cartesian coordinates (x, y, z_cm) with irregular horizons
+- **Transform**: (x, y, z_cm) → (x, y, z_strat) using proportional, top-onlap, bottom-erosional, or rotational methods
+- **Output**: (x, y, z_strat) where surfaces are parallel and spatial continuity is restored
+- **Result**: Variograms computed in strat-space capture true pedogenic processes
+
+### 3D Geometric Anisotropy
+
+Soil properties vary differently in horizontal vs. vertical directions:
+
+- **Horizontal range** (x-y plane): 100-1000 m (landscape-scale continuity)
+- **Vertical range** (z direction): 10-100 cm (pedogenic-scale)
+- **Anisotropy ratio**: a_h / a_v = 10-100 (typical for soils)
+
+The 3D variogram separates these:
+```
+γ(h_x, h_y, h_z) = γ[√((h_x² + h_y²)/a_h² + h_z²/a_v²)]
+```
+
+## Step 1: Define Surfaces and Create Test Data
+
+```{r data}
+library(geocoda)
+library(terra)
+library(compositions)
+
+set.seed(42)
+
+# Create synthetic 3D soil profile data
+# Grid: 3×3 horizontal locations × 5 depth levels
+locations <- expand.grid(
+  x = seq(0, 200, by = 100),
+  y = seq(0, 200, by = 100),
+  z = c(10, 30, 50, 70, 90)  # Depth in cm
+)
+
+nrows <- nrow(locations)
+
+# Compositional data: sand, silt, clay
+locations$sand <- 40 + sin(locations$x / 100) * 5 + rnorm(nrows, sd = 3)
+locations$silt <- 35 - cos(locations$y / 100) * 4 + rnorm(nrows, sd = 3)
+locations$clay <- 100 - locations$sand - locations$silt
+
+# Ensure valid compositions (0-100, sum to 100)
+locations$sand <- pmax(0, pmin(100, locations$sand))
+locations$silt <- pmax(0, pmin(100, locations$silt))
+locations$clay <- 100 - locations$sand - locations$silt
+
+head(locations)
+```
+
+## Step 2: Define Horizon Surfaces
+
+Define top and bottom surfaces. In this simple example, we use constant surfaces, but you can also use interpolated rasters for complex topography:
+
+```{r surfaces}
+# Define constant surfaces (top at 0 cm, bottom at -100 cm)
+surfaces <- gc_define_surfaces(
+  top_surface = 0,
+  bottom_surface = -100,
+  type = "constant",
+  extent = terra::ext(c(0, 200, 0, 200)),
+  resolution = c(10, 10)
+)
+
+# The surface object contains rasters for top, bottom, and thickness
+str(surfaces)
+```
+
+## Step 3: Transform to Stratigraphic Coordinates
+
+Convert from Cartesian (x, y, z_cm) to stratigraphic (x, y, z_strat) space:
+
+```{r strat_transform}
+# Transform: The proportional method maps depths as fractions of horizon thickness
+# z_strat = (z_top - z_cm) / (z_top - z_bottom) × h_const
+# This normalizes profiles to standard thickness h_const = 100
+locations_strat <- gc_stratigraphic_transform(
+  locations,
+  surfaces = surfaces,
+  transform_type = "proportional",
+  h_const = 100
+)
+
+head(locations_strat[, c("x", "y", "z", "z_strat", "sand")])
+```
+
+Note: The transformation stores metadata for later back-transformation:
+
+```{r strat_metadata}
+# Check transformation attributes
+attr(locations_strat, "transform_type")
+attr(locations_strat, "h_const")
+```
+
+## Step 4: Compute ILR Coordinates
+
+Transform composition to ILR (isometric log-ratio) space for multivariate geostatistics:
+
+```{r ilr_params}
+# Compute ILR parameters from the compositional data
+comp_cols <- c("sand", "silt", "clay")
+ilr_params <- gc_ilr_params(locations_strat[, comp_cols])
+
+# This returns mean, covariance, and component names
+str(ilr_params)
+
+# Compute ILR coordinates
+comp_acomp <- compositions::acomp(locations_strat[, comp_cols])
+ilr_coords <- as.data.frame(compositions::ilr(comp_acomp))
+names(ilr_coords) <- c("ilr1", "ilr2")
+
+# Add ILR coordinates to data
+locations_strat <- cbind(locations_strat, ilr_coords)
+
+head(locations_strat[, c("ilr1", "ilr2", "sand")])
+```
+
+## Step 5: Fit 3D Variogram
+
+Fit 3D variogram with separate horizontal and vertical ranges (geometric anisotropy):
+
+```{r vgm_3d}
+# Fit 3D variogram separating horizontal and vertical structure
+# Note: data must have x, y, z columns for 3D fitting
+# Rename z_strat to z for the function call
+locations_strat_renamed <- locations_strat
+names(locations_strat_renamed)[names(locations_strat_renamed) == "z_strat"] <- "z"
+
+vgm_3d <- gc_fit_vgm_3d(
+  ilr_params,
+  locations_strat_renamed,
+  vgm_model_type = "Exp",
+  horizontal_cutoff = 300,  # Max horizontal distance (m)
+  vertical_cutoff = 100,    # Max vertical distance (strat-cm)
+  tolerance_xy = 80,        # Tolerance for horizontal pairs
+  tolerance_z = 15          # Tolerance for vertical pairs
+)
+
+# Check fitted parameters
+str(vgm_3d$fitted_params)
+
+# Display anisotropy ratio
+cat("Anisotropy ratio (horizontal/vertical):\n")
+print(vgm_3d$fitted_params$anis_ratio)
+```
+
+## Step 6: Build 3D Model and Simulate
+
+Create a geostatistical model in 3D stratigraphic space:
+
+```{r sim_3d}
+# Build 3D model using fitted 3D variogram
+# The model uses gstat's native 3D kriging capability
+model_3d <- gc_ilr_model(
+  ilr_params = ilr_params,
+  variogram_model = vgm_3d,
+  data = locations_strat_renamed  # Use renamed version with z column
+)
+
+# Define 3D prediction grid at multiple depth levels
+grid_3d <- expand.grid(
+  x = seq(0, 200, by = 50),
+  y = seq(0, 200, by = 50),
+  z = seq(10, 90, by = 10)  # 5 depth slices in strat-space
+)
+
+cat("Prediction grid dimensions:\n")
+print(paste("Locations:", nrow(grid_3d)))
+print(paste("Components (sand, silt, clay): 3"))
+print(paste("Total predictions:", nrow(grid_3d) * 3))
+```
+
+## Step 7: 3D Simulation Workflow
+
+In practice, simulate multiple realizations at 3D locations:
+
+```{r eval=FALSE}
+# Simulate multiple realizations at 3D locations
+# The locations data frame with x, y, z columns enables 3D kriging
+sims_3d <- gc_sim_composition(
+  model = model_3d,
+  locations = grid_3d,
+  nsim = 100,  # 100 realizations for uncertainty quantification
+  target_names = c("sand", "silt", "clay"),
+  crs = "local"
+)
+
+# Output is terra::SpatRaster with layers for each component and realization
+# Layer names: sand.sim1, silt.sim1, clay.sim1, sand.sim2, silt.sim2, ...
+```
+
+**Key advantages of 3D simulation:**
+
+- **Direct 3D kriging**: Uses gstat's native implementation, not layer-by-layer approximation
+- **Geometric anisotropy**: Respects different horizontal and vertical correlation ranges
+- **Stratigraphic space**: Simulations honor pedogenic parallel-to-surface processes
+- **Block averaging**: Can discretize blocks to model management-scale uncertainty
+
+## Step 8: 3D Block Discretization (Management-Scale Uncertainty)
+
+For management units (fields, blocks), compute uncertainty at block support, not point support:
+
+```{r block_sim}
+# Define blocks at management scale (100m × 100m × 20cm depth)
+blocks_3d <- expand.grid(
+  x = seq(50, 150, by = 100),
+  y = seq(50, 150, by = 100),
+  z = c(30, 70)  # 2 depth layers in stratigraphic space
+)
+
+# Discretize each block into sub-points (3×3×3 = 27 sub-points)
+sub_points <- gc_discretize_block_3d(
+  blocks_3d,
+  block_size = c(100, 100, 20),
+  discretization = c(3, 3, 3)
+)
+
+cat("Block discretization:\n")
+cat("  Blocks:", nrow(blocks_3d), "\n")
+cat("  Sub-points per block:", 3*3*3, "\n")
+cat("  Total sub-points:", nrow(sub_points), "\n")
+```
+
+## Step 9: Back-Transformation to Cartesian Space
+
+After simulation or prediction in stratigraphic space, results can be transformed back to Cartesian coordinates for reporting and visualization. The transformation metadata is stored as attributes:
+
+```{r inverse_transform}
+# Display transformation metadata
+cat("Transformation metadata stored in locations_strat:\n")
+cat("  Transform type:", attr(locations_strat, "transform_type"), "\n")
+cat("  h_const:", attr(locations_strat, "h_const"), "\n")
+
+# Example usage (back-transformation of predictions)
+cat("\nExample back-transformation workflow:\n")
+cat("
+# After predictions in stratigraphic space, back-transform:
+pred_cartesian <- gc_inverse_stratigraphic_transform(predictions_strat)
+
+# Now predictions are in original Cartesian space (x, y, z_cm)
+# Ready for mapping, reporting, or decision-support
+")
+
+# Verify metadata is present
+cat("\nAll transformation attributes:", names(attributes(locations_strat)), "\n")
+```
+
+## Step 10: Risk Assessment on 3D Results
+
+After generating multiple realizations, compute probability maps for decision-making:
+
+```{r risk_assessment, eval=FALSE}
+# From 100 realizations at each location, compute risk metrics:
+
+# 1. Probability of clay > 40% (contamination threshold)
+prob_clay_high <- gc_probability_map(
+  simulations = sims_3d,
+  threshold = 40,
+  variable = "clay"
+)
+
+# 2. Conservative estimates for carbon credits
+p10_carbon <- gc_percentile_map(
+  simulations = carbon_stock_sims,
+  percentiles = c(0.1, 0.5, 0.9)
+)
+
+# 3. Expected loss under asymmetric cost function
+loss_map <- gc_risk_assessment(
+  simulations = contamination_sims,
+  threshold = 50,
+  loss_fn = function(actual, threshold) {
+    ifelse(actual < threshold, 0,  # No loss if below threshold
+           (actual - threshold) * 100)  # Cost proportional to excess
+  }
+)
+```
+
+**Key risk assessment capabilities:**
+
+- **Probability maps**: P(Z > threshold) for different thresholds and variables
+- **Percentile maps**: P10, P50, P90 for conservative vs. aggressive estimates
+- **Loss functions**: Asymmetric costs (false negative vs. false positive)
+- **Decision support**: Optimal thresholds for management decisions
+
+## Key Advantages of 3D Geostatistics
+
+1. **Stratigraphic Unwrinkling**: Captures pedogenic processes parallel to horizons, not just vertical layering
+2. **Geometric Anisotropy**: Models realistic soil property correlation (much stronger laterally than vertically)
+3. **True 3D Simulation**: Direct simulation at multiple depth slices, not independent 2D layers
+4. **Block-Scale Uncertainty**: Management-unit uncertainty via discretization, respecting volume-variance relationship
+5. **Integrated Workflow**: From raw horizons → stratification → 3D simulation → risk assessment
+
+## Complete Workflow Summary
+
+```r
+# 1. Define surfaces and data
+surfaces <- gc_define_surfaces(...)
+locations <- # Cartesian coordinates + compositions
+
+# 2. Transform to stratigraphic space
+locations_strat <- gc_stratigraphic_transform(locations, surfaces)
+
+# 3. Compute ILR and fit 3D variogram
+ilr_params <- gc_ilr_params(locations_strat[, comp_cols])
+vgm_3d <- gc_fit_vgm_3d(ilr_params, locations_strat, ...)
+
+# 4. Simulate in 3D stratigraphic space
+model_3d <- gc_ilr_model(ilr_params, ...)
+sims_3d <- gc_sim_composition(model_3d, grid_3d, nsim = 100, ...)
+
+# 5. Optional: Block-scale uncertainty
+sub_points <- gc_discretize_block_3d(blocks_3d, ...)
+block_sims <- gc_sim_composition(model_3d, sub_points, ...)
+
+# 6. Back-transform to Cartesian for reporting
+results_cartesian <- gc_inverse_stratigraphic_transform(sims_3d)
+
+# 7. Risk assessment
+prob_threshold <- gc_probability_map(sims_3d, threshold = 40)
+```
+
+## Related Phases
+
+- **Phase 1**: Risk assessment and probability mapping
+- **Phase 2**: Multi-backend hierarchical models (analytical, Stan, Nimble)
+- **Phase 3**: MAF decorrelation, DBS, vertical discretization
+- **Phase 4** (this): 3D stratigraphic geostatistics
+
+## Further Reading
+
+- Bishop et al. (1999): "Mass-preserving splines for soil horizon standardization"
+- Deutsch & Journel (2002): "Geostatistical Software Library and User's Guide"
+- Goovaerts (2001): "Geostatistical modelling of uncertainty in soil mapping"
+
+---
+
+Generated with geocoda Phase 4: 3D Geostatistics

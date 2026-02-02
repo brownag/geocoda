@@ -123,7 +123,10 @@ gc_sim_composition <- function(model,
 
   if (!is.null(observed_data)) {
     if (methods::is(observed_data, "data.frame")) {
-      observed_data_sf <- sf::st_as_sf(observed_data, coords = c("x", "y"), crs = crs)
+      # Support both 2D and 3D coordinates
+      has_z <- "z" %in% colnames(observed_data)
+      coord_cols <- if (has_z) c("x", "y", "z") else c("x", "y")
+      observed_data_sf <- sf::st_as_sf(observed_data, coords = coord_cols, crs = crs)
     } else if (methods::is(observed_data, "sf")) {
       observed_data_sf <- observed_data
     } else {
@@ -146,10 +149,14 @@ gc_sim_composition <- function(model,
     locations_sf <- locations
   } else {
     locations_df <- as.data.frame(locations)
-    if (!all(c("x", "y") %in% colnames(locations_df))) {
-      stop("locations must contain 'x' and 'y' columns")
+    # Support both 2D and 3D coordinates
+    has_z <- "z" %in% colnames(locations_df)
+    coord_cols <- if (has_z) c("x", "y", "z") else c("x", "y")
+
+    if (!all(coord_cols %in% colnames(locations_df))) {
+      stop("locations must contain 'x', 'y', and optionally 'z' columns")
     }
-    locations_sf <- sf::st_as_sf(locations_df, coords = c("x", "y"), crs = crs)
+    locations_sf <- sf::st_as_sf(locations_df, coords = coord_cols, crs = crs)
   }
 
   gstat_locations <- locations_sf

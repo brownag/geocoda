@@ -1,10 +1,12 @@
 #' Simulate and Back-Transform Compositional Fields
 #'
-#' Generate spatial realizations of compositional data by predicting in ILR space
+#' Generate spatial realizations of compositional data by predicting in ILR or MAF space
 #' using a gstat model, then back-transforming to the original units. Supports
 #' both unconditional simulation (independent of data) and conditional simulation
-#' (honoring observed values at sample locations). Multiple realizations are
-#' stacked into a multi-layer `terra::SpatRaster`.
+#' (honoring observed values at sample locations). When the model includes MAF
+#' decorrelation, automatically back-transforms from MAF to ILR before final
+#' compositional inversion. Multiple realizations are stacked into a multi-layer
+#' `terra::SpatRaster`.
 #'
 #' @param model A `gstat` object (typically from `gc_ilr_model()`).
 #'   For conditional simulation, the model **must be built with the `data` parameter**
@@ -175,10 +177,21 @@ gc_sim_composition <- function(model,
     )
   }
 
-  ilr_cols <- grep("^ilr\\d+\\.sim\\d+$", colnames(sim_result), value = TRUE)
+  # Check if MAF was used
+  maf_object <- attr(model, "maf_object")
+  ilr_mean_original <- attr(model, "ilr_mean_original")
+
+  # Look for either ILR or MAF columns depending on what was simulated
+  if (!is.null(maf_object)) {
+    ilr_cols <- grep("^maf\\d+\\.sim\\d+$", colnames(sim_result), value = TRUE)
+    is_maf <- TRUE
+  } else {
+    ilr_cols <- grep("^ilr\\d+\\.sim\\d+$", colnames(sim_result), value = TRUE)
+    is_maf <- FALSE
+  }
 
   if (length(ilr_cols) == 0) {
-    stop("No simulated ILR columns found in prediction result")
+    stop("No simulated ILR or MAF columns found in prediction result")
   }
 
   n_ilr <- max(as.numeric(gsub("ilr(\\d+)\\.sim\\d+", "\\1", ilr_cols)))
@@ -208,10 +221,31 @@ gc_sim_composition <- function(model,
       value = TRUE
     )
 
-    ilr_nums <- as.numeric(gsub("ilr(\\d+)\\.sim\\d+", "\\1", ilr_cols_for_sim))
+    # Extract dimension numbers
+    if (is_maf) {
+      ilr_nums <- as.numeric(gsub("maf(\\d+)\\.sim\\d+", "\\1", ilr_cols_for_sim))
+    } else {
+      ilr_nums <- as.numeric(gsub("ilr(\\d+)\\.sim\\d+", "\\1", ilr_cols_for_sim))
+    }
     ilr_cols_for_sim <- ilr_cols_for_sim[order(ilr_nums)]
 
-    ilr_mat <- as.matrix(sf::st_drop_geometry(sim_result[, ilr_cols_for_sim]))
+    mat_values <- as.matrix(sf::st_drop_geometry(sim_result[, ilr_cols_for_sim]))
+
+    # Back-transform from MAF to ILR if needed
+    if (is_maf) {
+      # Create a temporary data frame with MAF columns
+      maf_df <- as.data.frame(mat_values)
+      names(maf_df) <- paste0("maf", seq_len(ncol(maf_df)))
+
+      # Inverse MAF transformation: MAF -> ILR
+      ilr_df <- gc_inverse_maf(maf_df, maf_object, ilr_mean = ilr_mean_original)
+
+      # Extract ILR columns
+      ilr_col_names <- grep("^ilr\\d+$", names(ilr_df), value = TRUE)
+      ilr_mat <- as.matrix(ilr_df[, ilr_col_names])
+    } else {
+      ilr_mat <- mat_values
+    }
 
     comp_mat <- compositions::ilrInv(ilr_mat)
 

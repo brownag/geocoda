@@ -55,11 +55,13 @@ A \code{terra::SpatRaster} with layers named according to the pattern:
 and 2 realizations: \verb{comp1.sim1, comp2.sim1, comp3.sim1, comp1.sim2, ...}
 }
 \description{
-Generate spatial realizations of compositional data by predicting in ILR space
+Generate spatial realizations of compositional data by predicting in ILR or MAF space
 using a gstat model, then back-transforming to the original units. Supports
 both unconditional simulation (independent of data) and conditional simulation
-(honoring observed values at sample locations). Multiple realizations are
-stacked into a multi-layer \code{terra::SpatRaster}.
+(honoring observed values at sample locations). When the model includes MAF
+decorrelation, automatically back-transforms from MAF to ILR before final
+compositional inversion. Multiple realizations are stacked into a multi-layer
+\code{terra::SpatRaster}.
 }
 \details{
 This function:

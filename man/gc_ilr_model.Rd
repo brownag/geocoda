@@ -8,7 +8,9 @@ gc_ilr_model(
   ilr_params,
   variogram_model,
   data = NULL,
-  model_type = "univariate"
+  model_type = "univariate",
+  use_maf = FALSE,
+  maf_lag_h = NULL
 )
 }
 \arguments{
@@ -23,13 +25,23 @@ If NULL (default), Unconditional Simulation is performed.}
 \item{model_type}{Character string specifying the approach: \code{"univariate"}
 (default) or \code{"lmc"}. Univariate is numerically stable and standard practice.
 LMC includes cross-covariance terms between ILR dimensions.}
+
+\item{use_maf}{Logical. If TRUE, apply MAF decorrelation (default FALSE).}
+
+\item{maf_lag_h}{Numeric. Distance for MAF computation. If NULL, uses mean_range/3.}
 }
 \value{
-A \code{gstat} object representing the model.
+A \code{gstat} object representing the model with attributes:
+\itemize{
+\item \code{ilr_params}: The input ILR parameters
+\item \code{maf_object}: MAF transformation object (if use_maf = TRUE)
+}
 }
 \description{
 Constructs a gstat model for the ILR-transformed variables using either
 Independent Univariate Kriging or Linear Model of Coregionalization (LMC).
+Optionally applies Minimum/Maximum Autocorrelation Factors (MAF) for improved
+spatial decorrelation.
 }
 \details{
 \strong{Independent Univariate Kriging} (\code{model_type = "univariate"}):

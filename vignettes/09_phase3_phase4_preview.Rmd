@@ -29,8 +29,10 @@ Roadmap and preview of major features coming in Phase 3 and Phase 4 of geocoda d
 
 - **Phase 1**: Risk Assessment ✓ Complete (v0.3.0)
 - **Phase 2**: Multi-Backend Hierarchical Models ✓ Complete (v0.2.0+)
-- **Phase 3**: Multivariate Decorrelation & Block Simulation (IN PROGRESS)
-- **Phase 4**: 3D Stratigraphic Modeling (PLANNED)
+- **Phase 3**: Multivariate Decorrelation & Block Simulation ✓ Complete (v0.2.0+)
+- **Phase 4A**: Vertical Discretization with Splines ✓ Complete (v0.2.0+)
+- **Phase 4B**: Stratigraphic Coordinate Transformation ✓ Complete (v0.2.0+)
+- **Phase 4C**: 3D Geostatistics (PLANNED)
 
 # Phase 3: Advanced Multivariate Modeling
 
@@ -197,46 +199,111 @@ Phase 4 focuses on:
 
 ### What Stratigraphic Transformation Does
 
-Transforms complex folded/sloping soil horizons into flattened "stratigraphic" space:
+Transforms complex folded/sloping soil horizons into flattened "stratigraphic" space where parallel-to-surface pedogenic processes are spatially continuous:
 
-```{r stratigraphic_concept, eval=FALSE}
-# COMING: Stratigraphic coordinate transformation
+**Problem**: Regular (x, y, z) coordinates misrepresent soil structure:
+- Sloping horizons violate stationarity assumption
+- Spatial continuity is parallel to surfaces (not vertical)
+- Complex folding/erosion patterns create discontinuities
 
-# Problem: Regular (x, y, z) coordinates misrepresent soil structure
-# - Sloping horizons violate stationarity assumption
-# - Spatial continuity parallel to surfaces (not vertical)
-# - Complex folding/erosion patterns
+**Solution**: Transform to stratigraphic coordinates (x, y, z_strat):
+- Restore spatial continuity parallel to horizons
+- Flatten folded/sloping landscapes into uniform thickness representation
+- Preserve pedogenic process representation across landscape
 
-# Solution: Transform to stratigraphic coordinates (x, y, z_strat)
-# - Restore parallel-to-surface spatial continuity
-# - Flatten folded/sloping landscapes
-# - Preserve pedogenic process representation
+### Implementation & Working Examples
 
-# Transformation types:
-# 1. Proportional: z_strat = (z - z_base) / (z_top - z_base) × h
-# 2. Top-onlap: z_strat = z_top - z
-# 3. Bottom-erosional: z_strat = z - z_base
-# 4. Rotational: Apply rotation matrix for dip/azimuth
+Phase 4B provides four transformation types for different soil formation scenarios:
+
+```{r stratigraphic_demo}
+library(geocoda)
+library(terra)
+
+# Example 1: Proportional transformation (most common for intact profiles)
+# Define constant surfaces (0 cm top, -100 cm bottom)
+surfaces <- gc_define_surfaces(
+  top_surface = 0,
+  bottom_surface = -100,
+  type = "constant",
+  extent = terra::ext(c(0, 1000, 0, 1000)),
+  resolution = c(10, 10)
+)
+
+# Inspect surfaces
+str(surfaces)
+# List with: $top (SpatRaster), $bottom (SpatRaster), $thickness, $type, $crs
+
+# Create sample data at different depths and locations
+sample_data <- data.frame(
+  x = c(100, 200, 300, 400),
+  y = c(100, 200, 300, 400),
+  z = c(-10, -50, -90, -100)  # Depths: top, middle, lower, base
+)
+
+# Transform to proportional stratigraphic coordinates
+# Formula: z_strat = ((z_top - z) / thickness) * h_const
+# z_strat=0 at surface (z=0), z_strat=100 at base (z=-100)
+data_strat <- gc_stratigraphic_transform(
+  sample_data,
+  surfaces = surfaces,
+  transform_type = "proportional",
+  h_const = 100
+)
+
+print(data_strat)
+# z values: -10, -50, -90, -100
+# z_strat should be: 90, 50, 10, 0
+
+# Verify round-trip transformation
+data_back <- gc_inverse_stratigraphic_transform(data_strat)
+all.equal(data_back$z, sample_data$z, tolerance = 1e-6)
+# [1] TRUE
 ```
 
-### Expected Capabilities
+```{r stratigraphic_demo2}
+# Example 2: Top-onlap transformation (surface-driven formation)
+# Useful for horizons formed downward from surface (A horizons, weathering)
+data_onlap <- gc_stratigraphic_transform(
+  sample_data,
+  surfaces = surfaces,
+  transform_type = "top_onlap"
+)
+# Formula: z_strat = z_top - z = 0 - (-10) = 10 cm below surface
 
-```{r stratigraphic_functions, eval=FALSE}
-# COMING: Phase 4 stratigraphic coordinate functions
+# Example 3: Bottom-erosional transformation (bedrock-controlled)
+# Useful for profiles truncated by erosion or bedrock proximity
+data_erosional <- gc_stratigraphic_transform(
+  sample_data,
+  surfaces = surfaces,
+  transform_type = "bottom_erosional"
+)
+# Formula: z_strat = z - z_base = (-10) - (-100) = 90 cm above base
+```
 
-# gc_define_surfaces(top_surface, bottom_surface)
-# - Define bounding surfaces (top and bottom of soil layer)
-# - Surfaces can be DEM-like rasters or interpolated
+```{r stratigraphic_capabilities}
+# Supported Capabilities:
 
-# gc_stratigraphic_transform(data, surfaces, transform_type)
-# - Apply transformation to (x, y, z) → (x, y, z_strat)
+# 1. Surface Definition:
+# - Constant: Flat surfaces (e.g., 0-100 cm depth unit)
+# - Raster: DEM-like horizon surfaces from terra::SpatRaster
+# - Interpolated: From point observations (IDW, kriging, spline)
 
-# gc_inverse_stratigraphic_transform(data_strat, surfaces)
-# - Back-transform from stratigraphic → Cartesian coordinates
+# 2. Transformation Types:
+# - proportional: z_strat = ((z_top - z) / thickness) * h_const
+# - top_onlap: z_strat = z_top - z
+# - bottom_erosional: z_strat = z - z_base
+# - rotational: z_strat = R * [x, y, z]^T (for steep slopes)
 
-# gc_3d_variogram(data_strat, directions)
-# - 3D variogram modeling in stratigraphic space
-# - Anisotropy (different ranges horizontal vs vertical)
+# 3. Surface Interpolation Methods:
+# - idw: Inverse distance weighting
+# - kriging: Geostatistical interpolation (via gstat)
+# - spline: Thin plate splines (requires fields package)
+
+# 4. Validation & Metadata:
+# - Validates top > bottom everywhere (no inversions)
+# - Warns if points outside unit boundaries
+# - Stores transformation type and parameters as attributes
+# - Enables reversible round-trip transformations
 ```
 
 ### Use Cases

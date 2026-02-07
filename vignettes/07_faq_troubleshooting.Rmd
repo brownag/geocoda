@@ -21,6 +21,8 @@ knitr::opts_chunk$set(
 )
 library(dplyr)
 library(tidyr)
+library(dplyr)
+library(tidyr)
 ```
 
 # Overview
@@ -958,13 +960,6 @@ cat("  # Should be small relative to data SD\n")
 
 # References
 
-GitHub Issues: https://github.com/brownag/geocoda/issues
-Package Documentation: https://brownag.github.io/geocoda
-
----
-
-**This FAQ will be expanded with:**
-- Detailed error troubleshooting
-- Performance optimization strategies
-- Workflow best practices
-- Real-world solutions to common problems
+- See **Vignette 00** for complete workflow
+- See **Vignette 03** for hierarchical modeling details
+- See **Vignette 06** for parameter selection guidance

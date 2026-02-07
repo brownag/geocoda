@@ -1,0 +1,334 @@
+---
+title: "Zone-Stratified Model Diagnostics & Uncertainty Quantification"
+author: "geocoda"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_document
+vignette: >
+  %\VignetteIndexEntry{Zone-Stratified Model Diagnostics & Uncertainty Quantification}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 10,
+  fig.height = 6,
+  dpi = 100
+)
+```
+
+# Zone-Stratified Model Diagnostics & Uncertainty Quantification
+
+This example demonstrates comprehensive model diagnostics stratified by zone.
+Identifies under-validated zones needing additional data, quantifies compositional
+uncertainty hotspots, and assesses parameter stability under bootstrap resampling.
+
+## Setup: Create Three-Zone Domain
+
+```{r setup-data}
+library(geocoda)
+library(ggplot2)
+library(sf)
+
+# Create synthetic three-zone domain
+set.seed(42)
+n_samples <- 150
+
+# Zone assignments: upland (1), midslope (2), lowland (3)
+zone_vector <- rep(c("upland", "midslope", "lowland"), each = n_samples / 3)
+
+# Compositional data with zone-specific mean compositions
+comps <- data.frame(
+  # Upland: sandy (high SAND variability, low CLAY)
+  SAND = c(
+    rnorm(n_samples / 3, mean = 75, sd = 8),
+    rnorm(n_samples / 3, mean = 60, sd = 10),
+    rnorm(n_samples / 3, mean = 45, sd = 12)
+  ),
+  # Midslope: loamy (balanced)
+  SILT = c(
+    rnorm(n_samples / 3, mean = 15, sd = 5),
+    rnorm(n_samples / 3, mean = 25, sd = 8),
+    rnorm(n_samples / 3, mean = 30, sd = 10)
+  ),
+  # Lowland: clayey (high CLAY, low SAND)
+  CLAY = c(
+    rnorm(n_samples / 3, mean = 10, sd = 4),
+    rnorm(n_samples / 3, mean = 15, sd = 6),
+    rnorm(n_samples / 3, mean = 25, sd = 8)
+  ),
+  zone = zone_vector
+)
+
+# Closure constraint: normalize to 100
+comps[, 1:3] <- prop.table(as.matrix(comps[, 1:3]), margin = 1) * 100
+
+head(comps, 10)
+```
+
+## 1. Fit Hierarchical Model
+
+```{r fit-model}
+# Define hierarchy
+hz_def <- gc_define_hierarchy(
+  data = comps,
+  comp_cols = c("SAND", "SILT", "CLAY"),
+  group_col = "zone",
+  var_order = "variance"
+)
+
+# Fit HZM
+hz_fit <- gc_fit_hierarchical_model(
+  data = comps,
+  object = hz_def,
+  verbose = FALSE
+)
+
+cat("Hierarchical model fitted.\n")
+cat("Structure:\n")
+print(hz_fit$hierarchy)
+```
+
+## 2. Per-Zone Cross-Validation
+
+Assess model predictiveness stratified by zone.
+
+```{r cv-per-zone}
+cv_results <- gc_cross_validate_per_zone(
+  data = comps,
+  zone_vector = zone_vector,
+  comp_cols = c("SAND", "SILT", "CLAY"),
+  k = 5,
+  verbose = TRUE
+)
+
+cat("\n=== Cross-Validation Summary RMSE by Zone ===\n")
+print(cv_results[, c("zone", "n_samples", "mean_rmse", "sd_rmse", "mean_r_squared")])
+
+# Visualize CV results
+cv_plot <- ggplot(cv_results, aes(x = reorder(zone, -mean_rmse), y = mean_rmse, 
+                                   fill = zone)) +
+  geom_col() +
+  geom_errorbar(aes(ymin = mean_rmse - sd_rmse, ymax = mean_rmse + sd_rmse), 
+                width = 0.2) +
+  labs(
+    title = "Cross-Validation RMSE by Zone",
+    x = "Zone",
+    y = "Mean RMSE (± 1 SD)",
+    subtitle = "Lower RMSE indicates better model fit"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+print(cv_plot)
+```
+
+**Interpretation**:
+- **Upland** (low RMSE): Well-fitted, sufficient data
+- **Midslope** (moderate RMSE): Adequate fit
+- **Lowland** (high RMSE): Underfitted; may need more samples
+
+## 3. Generate Ensemble
+
+```{r generate-ensemble}
+# Simulate hierarchical ensemble
+ensemble <- gc_sim_hierarchical(
+  object = hz_fit,
+  n = 500,
+  zone_vector = comps$zone,
+  coords = data.frame(x = seq_len(nrow(comps)), y = rep(1, nrow(comps)))
+)
+
+cat("Ensemble generated:\n")
+cat("  Realizations:", length(ensemble$data[[1]]), "\n")
+cat("  Zones:", length(unique(ensemble$data$zone_id)), "\n")
+```
+
+## 4. Per-Zone Compositional Entropy
+
+Identify high-uncertainty zones (compositional variability hotspots).
+
+```{r entropy-per-zone}
+entropy_results <- gc_compute_entropy_per_zone(
+  ensemble = ensemble,
+  zone_col = "zone_id",
+  method = "shannon",
+  normalize = TRUE,
+  verbose = TRUE
+)
+
+cat("\n=== Entropy Summary ===\n")
+print(entropy_results[, c("zone", "n_ensemble", "shannon_entropy", 
+                          "dominant_component", "uncertainty_class")])
+
+# Visualize entropy
+entropy_plot <- ggplot(entropy_results, aes(x = reorder(zone, -shannon_entropy), 
+                                            y = shannon_entropy, 
+                                            fill = uncertainty_class)) +
+  geom_col() +
+  scale_fill_manual(values = c("Low" = "green", "Medium" = "yellow", "High" = "red")) +
+  labs(
+    title = "Compositional Entropy by Zone",
+    x = "Zone",
+    y = "Shannon Entropy (normalized)",
+    subtitle = "High entropy = greater compositional uncertainty",
+    fill = "Uncertainty"
+  ) +
+  theme_minimal()
+
+print(entropy_plot)
+```
+
+**Interpretation**:
+- **Low Entropy** (e.g., upland): Homogeneous composition (low uncertainty)
+- **High Entropy** (e.g., lowland): Diverse composition (high uncertainty, may need targeted sampling)
+
+## 5. Bootstrap Parameter Uncertainty
+
+Assess robustness of zone-specific parameter estimates.
+
+```{r bootstrap-per-zone}
+bootstrap_results <- gc_bootstrap_uncertainty_per_zone(
+  data = comps,
+  zone_vector = comps$zone,
+  n_bootstrap = 1000,
+  conf_level = 0.95,
+  verbose = TRUE
+)
+
+cat("\n=== Parameter CI Summary ===\n")
+print(bootstrap_results$zone_estimates[, c("zone", "n_obs", "param_1_est", 
+                                           "param_1_lower", "param_1_upper")])
+```
+
+## 6. Combined Diagnostic Dashboard
+
+Integrate all diagnostics into a single assessment.
+
+```{r diagnostic-dashboard}
+# Create summary data frame combining all metrics
+diagnostic_summary <- data.frame(
+  zone = cv_results$zone,
+  model_fit_rmse = cv_results$mean_rmse,
+  cv_stability = cv_results$sd_rmse,
+  composition_entropy = entropy_results$shannon_entropy,
+  uncertainty_class = entropy_results$uncertainty_class,
+  param_uncertainty = bootstrap_results$zone_estimates$param_1_upper - 
+                      bootstrap_results$zone_estimates$param_1_lower
+)
+
+cat("=== Comprehensive Zone Diagnostic Summary ===\n\n")
+print(diagnostic_summary)
+
+# Diagnostic recommendation matrix
+cat("\n=== Diagnostic Recommendations ===\n\n")
+for (i in seq_len(nrow(diagnostic_summary))) {
+  zone_name <- diagnostic_summary$zone[i]
+  rmse <- diagnostic_summary$model_fit_rmse[i]
+  entropy <- diagnostic_summary$composition_entropy[i]
+  param_unc <- diagnostic_summary$param_uncertainty[i]
+  
+  cat(sprintf("Zone: %s\n", zone_name))
+  
+  if (rmse > mean(diagnostic_summary$model_fit_rmse) * 1.3) {
+    cat("  ⚠ Model fit is poor relative to other zones\n")
+    cat("    Recommendation: Increase sampling, check for outliers\n")
+  } else {
+    cat("  ✓ Model fit is adequate\n")
+  }
+  
+  if (entropy > quantile(diagnostic_summary$composition_entropy, 0.75)) {
+    cat("  ⚠ High compositional entropy detected\n")
+    cat("    Recommendation: Target uncertain compositions for more data\n")
+  } else {
+    cat("  ✓ Composition is relatively homogeneous\n")
+  }
+  
+  if (param_unc > quantile(diagnostic_summary$param_uncertainty, 0.75)) {
+    cat("  ⚠ Parameter estimates have wide confidence intervals\n")
+    cat("    Recommendation: More data needed for stable estimates\n")
+  } else {
+    cat("  ✓ Parameter estimates are stable\n")
+  }
+  
+  cat("\n")
+}
+```
+
+## 7. Advanced: Multi-Diagnostic Composite Assessment
+
+```{r composite-assessment}
+# Normalize metrics to [0, 1] for composite scoring
+diagnostic_summary$rmse_norm <- 
+  (diagnostic_summary$model_fit_rmse - min(diagnostic_summary$model_fit_rmse)) /
+  (max(diagnostic_summary$model_fit_rmse) - min(diagnostic_summary$model_fit_rmse))
+
+diagnostic_summary$entropy_norm <-
+  (diagnostic_summary$composition_entropy - min(diagnostic_summary$composition_entropy)) /
+  (max(diagnostic_summary$composition_entropy) - min(diagnostic_summary$composition_entropy))
+
+diagnostic_summary$param_unc_norm <-
+  (diagnostic_summary$param_uncertainty - min(diagnostic_summary$param_uncertainty)) /
+  (max(diagnostic_summary$param_uncertainty) - min(diagnostic_summary$param_uncertainty))
+
+# Composite "confidence" score (inverse of uncertainty)
+diagnostic_summary$confidence_score <- 1 - (
+  0.4 * diagnostic_summary$rmse_norm +
+  0.3 * diagnostic_summary$entropy_norm +
+  0.3 * diagnostic_summary$param_unc_norm
+)
+
+cat("=== Zone Confidence Scores (0-1, higher is better) ===\n")
+print(diagnostic_summary[, c("zone", "confidence_score")])
+
+# Visualize composite score
+confidence_plot <- ggplot(diagnostic_summary, aes(x = reorder(zone, -confidence_score), 
+                                                   y = confidence_score, 
+                                                   fill = confidence_score)) +
+  geom_col() +
+  scale_fill_gradient(low = "red", high = "green", limits = c(0, 1)) +
+  labs(
+    title = "Zone Model Confidence Score",
+    x = "Zone",
+    y = "Confidence (0-1)",
+    subtitle = "Composite of model fit, composition stability, parameter precision"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+print(confidence_plot)
+```
+
+## 8. Best Practices
+
+### Cross-Validation Interpretation
+
+- **RMSE < 5%**: Excellent zone-specific predictions
+- **RMSE 5-10%**: Good predictions, acceptable for most applications
+- **RMSE > 10%**: Poor predictions, zone needs more data
+
+### Entropy Hotspots
+
+High-entropy zones indicate:
+1. Natural compositional variability (no action needed)
+2. Insufficient sampling (add targeted samples)
+3. Multiple sub-domains (consider stratifying further)
+
+### Parameter Stability
+
+- If parameter CI overlaps between zones, they may be mergeable
+- If parameter CI non-overlapping, zones are distinct (keep separate)
+
+## Summary
+
+The per-zone diagnostic workflow enables:
+
+1. **Data Gap Identification**: Detect under-sampled zones via CV and entropy
+2. **Uncertainty Quantification**: Assess parameter stability via bootstrap
+3. **Sampling Design**: Recommend where to collect additional data
+4. **Model Validation**: Verify zone appropriateness and distinctness
+5. **Confidence Assessment**: Composite score combining all metrics
+
+Use these diagnostics to iteratively refine your zone definitions and sampling strategy.

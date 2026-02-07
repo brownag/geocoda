@@ -1,0 +1,469 @@
+---
+title: "Per-Zone Risk Assessment & Decision Support"
+author: "Andrew G. Brown"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    number_sections: true
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 10,
+  fig.height = 7,
+  dpi = 100,
+  eval = FALSE
+)
+```
+
+# Introduction: Decision-Making Under Asymmetric Costs
+
+**Objective**: Translate zone-stratified uncertainty into actionable decisions using expected loss frameworks.
+
+**This example covers:**
+
+1. **Expected loss computation** — Cost-benefit analysis per zone
+2. **Asymmetric cost functions** — Different penalties for over/under-application
+3. **Carbon compliance auditing** — Carbon stock verification with uncertainty quantification
+4. **Decision prioritization** — Which zones need resources first?
+
+**Prerequisites:**
+- Familiarity with stratified hierarchical modeling (Example 03)
+- Understand per-zone ensemble aggregation (Example 04)
+- Basic understanding of decision theory
+
+**Why Per-Zone Risk Assessment Matters:**
+
+Standard risk metrics (e.g., "P(SAND < 50%) = 30%") ignore context:
+- A farmer in upland may accept high clay (landscape naturally clay-rich)
+- A farmer in lowland must avoid high clay (drainage constraints)
+- A carbon auditor must quantify uncertainty for compliance reporting
+- Land managers need zone-specific cost-benefit tradeoffs
+
+Per-zone decision support reveals:
+- Which zones pose highest financial/environmental risk?
+- Where are resources most cost-effective?
+- Which zones have sufficient carbon verification for credit issuance?
+
+---
+
+# Setup & Data Preparation
+
+```{r libraries}
+library(geocoda)
+library(terra)
+library(sf)
+
+set.seed(42)
+```
+
+## Create Stratified Soil Data with Zone-Specific Characteristics
+
+```{r generate_data}
+# Three zones with different compositions and sample sizes
+# Upland: sandy, well-drained
+upland <- data.frame(
+  zone = "Upland",
+  x = runif(15, 0, 30),
+  y = runif(15, 0, 30),
+  SAND = pmax(60, pmin(85, rnorm(15, mean = 72, sd = 8))),
+  SILT = NA,
+  CLAY = NA
+)
+
+# Midslope: loamy, transition
+midslope <- data.frame(
+  zone = "Midslope",
+  x = runif(25, 35, 65),
+  y = runif(25, 35, 65),
+  SAND = pmax(35, pmin(60, rnorm(25, mean = 48, sd = 10))),
+  SILT = NA,
+  CLAY = NA
+)
+
+# Lowland: clay-rich, poorly drained
+lowland <- data.frame(
+  zone = "Lowland",
+  x = runif(10, 70, 100),
+  y = runif(10, 70, 100),
+  SAND = pmax(20, pmin(40, rnorm(10, mean = 28, sd = 6))),
+  SILT = NA,
+  CLAY = NA
+)
+
+all_data <- rbind(upland, midslope, lowland)
+
+# Complete composition to close at 100%
+all_data$SILT <- 30 - all_data$SAND * 0.2
+all_data$CLAY <- 100 - all_data$SAND - all_data$SILT
+all_data$CLAY <- pmax(0, pmin(100 - all_data$SAND - all_data$SILT, 100 - all_data$SAND - all_data$SILT))
+
+# Verify closure
+cat("Data coverage by zone:\n")
+print(table(all_data$zone))
+cat("\nComposition summary (mean %):\n")
+print(aggregate(all_data[, c("SAND", "SILT", "CLAY")], 
+                by = list(Zone = all_data$zone), 
+                FUN = mean))
+```
+
+---
+
+# Step 1: Fit Stratified Hierarchical Model
+
+Quick HZM fit on stratified zones:
+
+```{r fit_model}
+# Define hierarchy
+hierarchy <- gc_define_hierarchy(
+  data = all_data[, c("SAND", "SILT", "CLAY")],
+  zone_col = "zone",
+  zone_vector = all_data$zone,
+  levels = c("zone", "global")
+)
+
+# Set priors
+priors <- gc_set_hierarchy_priors(
+  data = all_data[, c("SAND", "SILT", "CLAY")],
+  hierarchy = hierarchy,
+  mean_strength = 1.5,
+  adjust_strength_by_n = TRUE
+)
+
+# Fit HZM
+hzm_fit <- gc_fit_hierarchical_model(
+  data = all_data[, c("SAND", "SILT", "CLAY")],
+  hierarchy = hierarchy,
+  priors = priors,
+  backend = "analytical",
+  verbose = FALSE
+)
+
+cat("Model fitted successfully. Generating ensemble...\n")
+```
+
+---
+
+# Step 2: Generate Ensemble & Per-Zone Statistics
+
+```{r generate_ensemble}
+# Generate ensemble realizations
+n_realizations <- 100
+
+ensemble <- gc_sim_hierarchical(
+  object = hzm_fit,
+  n = n_realizations,
+  zone_vector = all_data$zone,
+  coords = all_data[, c("x", "y")],
+  method = "turn_based"
+)
+
+cat("Ensemble generated:\n")
+cat("  Realizations:", n_realizations, "\n")
+cat("  Locations:", nrow(ensemble$data), "\n")
+
+# Compute per-zone ensemble statistics
+per_zone_stats <- gc_ensemble_per_zone(
+  ensemble = ensemble,
+  zone_col = "zone_id",
+  verbose = FALSE
+)
+
+cat("\nPer-zone summary (SAND):\n")
+print(per_zone_stats$zone_stats[, c("zone", "n", "SAND_mean", "SAND_sd", "SAND_lower", "SAND_upper")])
+```
+
+---
+
+# Step 3: Define Risk Thresholds & Cost Functions
+
+Classic farmer decision scenario: management constraints and asymmetric costs.
+
+```{r define_costs}
+# Thresholds (critical values)
+# - SAND < 40%: Insufficient drainage (problem)
+# - CLAY > 35%: Compaction risk (problem)
+
+thresholds <- c(
+  SAND = 40,  # Minimum sand for drainage
+  CLAY = 35   # Maximum clay before compaction
+)
+
+# Asymmetric cost matrix
+# Units: arbitrary economic loss units (could be $ or crop yield loss)
+cost_matrix <- data.frame(
+  component = c("SAND", "CLAY"),
+  cost_under = c(150, 0),      # SAND < 40% costs 150 (drainage failure = high cost)
+                                # CLAY < 35% has zero cost (lower is better)
+  cost_over = c(0, 120)         # SAND > 40% has zero cost (higher is fine)
+                                 # CLAY > 35% costs 120 (compaction risk)
+)
+
+cat("Risk Threshold & Cost Matrix:\n")
+cat("Thresholds:\n")
+print(thresholds)
+cat("\nCost Matrix (economic loss units):\n")
+print(cost_matrix)
+```
+
+---
+
+# Step 4: Compute Per-Zone Expected Loss
+
+```{r per_zone_risk}
+# Compute expected loss by zone
+risk_results <- gc_risk_assessment_per_zone(
+  ensemble = ensemble,
+  zone_col = "zone_id",
+  thresholds = thresholds,
+  cost_matrix = cost_matrix,
+  verbose = TRUE
+)
+
+cat("\n\nExpected Loss Summary:\n")
+print(risk_results)
+```
+
+---
+
+# Step 5: Interpret Results & Prioritize Management Actions
+
+```{r interpret_risk}
+# Summarize by zone
+zone_risk_summary <- aggregate(
+  expected_loss ~ zone,
+  data = risk_results,
+  FUN = function(x) c(mean = mean(x), max = max(x))
+)
+
+cat("Zone Risk Ranking (mean expected loss):\n")
+zone_summary <- data.frame(
+  zone = unique(risk_results$zone),
+  mean_expected_loss = aggregate(expected_loss ~ zone, data = risk_results, FUN = mean)$expected_loss,
+  max_expected_loss = aggregate(expected_loss ~ zone, data = risk_results, FUN = max)$expected_loss
+)
+
+zone_summary <- zone_summary[order(zone_summary$mean_expected_loss, decreasing = TRUE), ]
+print(zone_summary)
+
+cat("\n\nInterpretation:\n")
+cat("High expected loss zones:\n")
+high_risk_zones <- zone_summary[zone_summary$mean_expected_loss > median(zone_summary$mean_expected_loss), ]
+for (i in seq_len(nrow(high_risk_zones))) {
+  zone_name <- high_risk_zones[i, 1]
+  loss <- high_risk_zones[i, 2]
+  cat(sprintf("  %s: EL = %.1f (prioritize mitigation)\n", zone_name, loss))
+}
+```
+
+---
+
+# Step 6: Carbon Compliance Audit
+
+Compute per-zone carbon stock with compliance verification:
+
+```{r carbon_audit}
+# Audit carbon stock by zone
+carbon_audit <- gc_carbon_audit_per_zone(
+  ensemble = ensemble,
+  zone_col = "zone_id",
+  soil_depth = 30,        # Audit top 30cm
+  bulk_density = NULL,    # Use default by texture
+  carbon_fraction = "soilgrids",  # Empirical SoilGrids C model
+  credit_price = 25,      # USD per Mg C/ha
+  verbose = TRUE
+)
+
+cat("\n\nCarbon Stock Results:\n")
+print(carbon_audit)
+```
+
+---
+
+# Step 7: Decision Matrix & Resource Allocation
+
+Combine risk and carbon audit for comprehensive zone prioritization:
+
+```{r decision_matrix}
+# Create decision matrix combining risk and carbon metrics
+decision_table <- data.frame(
+  Zone = zone_summary$zone,
+  Avg_Expected_Loss = zone_summary$mean_expected_loss,
+  Risk_Ranking = rank(-zone_summary$mean_expected_loss),
+  C_Stock_Verified = carbon_audit$compliance_status[
+    match(zone_summary$zone, carbon_audit$zone)
+  ],
+  C_Credit_USD = carbon_audit$credit_value_usd[
+    match(zone_summary$zone, carbon_audit$zone)
+  ]
+)
+
+decision_table$Overall_Priority <- ifelse(
+  decision_table$Risk_Ranking <= 2 & decision_table$C_Stock_Verified != "Verified",
+  "High (Risk + Carbon Uncertainty)",
+  ifelse(
+    decision_table$Risk_Ranking <= 2,
+    "High (Risk Only)",
+    "Medium/Low"
+  )
+)
+
+cat("Decision & Resource Allocation Matrix:\n")
+print(decision_table)
+
+cat("\n\nRecommendations:\n")
+for (i in seq_len(nrow(decision_table))) {
+  zone_name <- decision_table$Zone[i]
+  priority <- decision_table$Overall_Priority[i]
+  carbon_status <- decision_table$C_Stock_Verified[i]
+  
+  cat(sprintf("\"%s\" zone: ", zone_name))
+  cat(sprintf("Priority = %s\n", priority))
+  
+  if (carbon_status != "Verified") {
+    cat(sprintf("  → Recommend additional sampling for carbon verification\n"))
+  }
+  cat(sprintf("  → Review management practices to reduce expected loss\n\n"))
+}
+```
+
+---
+
+# Step 8: Visualization
+
+Box plots showing risk distribution and carbon uncertainty:
+
+```{r visualization}
+par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+
+# 1. Expected Loss by Zone & Component
+sand_risk <- risk_results[risk_results$component == "SAND", ]
+boxplot(
+  list(
+    Upland = sand_risk$expected_loss[sand_risk$zone == "Upland"],
+    Midslope = sand_risk$expected_loss[sand_risk$zone == "Midslope"],
+    Lowland = sand_risk$expected_loss[sand_risk$zone == "Lowland"]
+  ),
+  main = "Expected Loss (SAND drainage threshold)",
+  ylab = "Expected Loss (units)",
+  col = c("tan", "lightgreen", "lightblue")
+)
+
+# 2. Carbon Stock by Zone
+carbon_audit_sorted <- carbon_audit[
+  match(c("Upland", "Midslope", "Lowland"), carbon_audit$zone),
+]
+
+barplot(
+  carbon_audit_sorted$mean_c_stock_mg_ha,
+  names.arg = carbon_audit_sorted$zone,
+  main = "Mean Carbon Stock by Zone",
+  ylab = "C Stock (Mg/ha)",
+  ylim = c(0, max(carbon_audit_sorted$ci_upper) * 1.2),
+  col = c("tan", "lightgreen", "lightblue")
+)
+
+# Add error bars (manual)
+mids <- 1:3
+segments(mids, carbon_audit_sorted$ci_lower, mids, carbon_audit_sorted$ci_upper)
+segments(mids - 0.1, carbon_audit_sorted$ci_lower, mids + 0.1, carbon_audit_sorted$ci_lower)
+segments(mids - 0.1, carbon_audit_sorted$ci_upper, mids + 0.1, carbon_audit_sorted$ci_upper)
+
+# 3. Carbon Compliance Status
+compliance_counts <- table(carbon_audit$zone, carbon_audit$compliance_status)
+barplot(
+  t(compliance_counts)[, c("Upland", "Midslope", "Lowland")],
+  main = "Carbon Compliance Status by Zone",
+  ylab = "Count",
+  legend.text = TRUE,
+  col = c("darkred", "orange", "darkgreen")
+)
+
+# 4. Risk vs Carbon Trade-off
+plot(
+  zone_summary$mean_expected_loss,
+  carbon_audit_sorted$mean_c_stock_mg_ha,
+  main = "Risk vs Carbon Stock (trade-off analysis)",
+  xlab = "Expected Loss",
+  ylab = "C Stock (Mg/ha)",
+  pch = 16,
+  cex = 2,
+  col = c("tan", "lightgreen", "lightblue")[seq_len(nrow(zone_summary))]
+)
+
+text(
+  zone_summary$mean_expected_loss,
+  carbon_audit_sorted$mean_c_stock_mg_ha,
+  labels = c("Upland", "Midslope", "Lowland"),
+  pos = 3,
+  cex = 0.9
+)
+```
+
+---
+
+# Summary & Best Practices
+
+## When to Use Per-Zone Risk Assessment
+
+Use this approach when:
+
+1. **Asymmetric costs**: Over- and under-application have different financial impacts
+2. **Zone heterogeneity**: Zones have naturally different "acceptable" ranges
+3. **Resource-constrained**: Limited budget requires prioritization
+4. **Compliance-driven**: Carbon audits, environmental regulations require per-zone verification
+
+## Key Insights
+
+- **Upland zones** (high sand): Drainage not a concern; risk from CLAY > 35% is minimal (sandy soils naturally resistant)
+- **Midslope zones** (loamy): Mixed concerns; requires balanced assessment
+- **Lowland zones** (clay-rich): High risk from compaction; per-zone decision support critical
+
+## Decision Framework
+
+| Metric | Decision |
+|--------|----------|
+| High expected loss + wide C CI | Highest priority: manage risk + sample carbon |
+| High expected loss + verified C | High priority: manage risk, confidence in carbon |
+| Low expected loss + uncertain C | Medium priority: verify carbon for compliance |
+| Low expected loss + verified C | Lowest priority: maintain current practices |
+
+---
+
+# Advanced: Sensitivity Analysis (Optional)
+
+```{r sensitivity, eval=FALSE}
+# How does changing thresholds affect zone risk rankings?
+
+# Test alternative thresholds
+thresholds_optimistic <- c(SAND = 35, CLAY = 40)
+thresholds_conservative <- c(SAND = 50, CLAY = 30)
+
+risk_optimistic <- gc_risk_assessment_per_zone(
+  ensemble, zone_col = "zone_id",
+  thresholds = thresholds_optimistic,
+  cost_matrix = cost_matrix, verbose = FALSE
+)
+
+risk_conservative <- gc_risk_assessment_per_zone(
+  ensemble, zone_col = "zone_id",
+  thresholds = thresholds_conservative,
+  cost_matrix = cost_matrix, verbose = FALSE
+)
+
+# Compare rankings
+cat("Sensitivity to threshold choice:\n\n")
+cat("Central thresholds (SAND=40, CLAY=35):\n")
+print(aggregate(expected_loss ~ zone, data = risk_results, FUN = mean))
+
+cat("\nOptimistic (SAND=35, CLAY=40):\n")
+print(aggregate(expected_loss ~ zone, data = risk_optimistic, FUN = mean))
+
+cat("\nConservative (SAND=50, CLAY=30):\n")
+print(aggregate(expected_loss ~ zone, data = risk_conservative, FUN = mean))
+```
+

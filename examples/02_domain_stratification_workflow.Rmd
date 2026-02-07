@@ -1,0 +1,441 @@
+---
+title: "Domain Stratification and Per-Stratum Modeling Workflow"
+author: "geocoda Package"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: show
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = TRUE,
+  warning = FALSE,
+  fig.width = 12,
+  fig.height = 8,
+  dpi = 100
+)
+
+# Suppress startup messages
+suppressPackageStartupMessages({
+  library(geocoda)
+  library(ggplot2)
+  library(dplyr)
+})
+
+set.seed(42)
+```
+
+# Introduction
+
+This document demonstrates the complete workflow for **spatial domain stratification** when 
+compositional data exhibits non-stationarity across the study area. The key steps are:
+
+1. **Assess Stationarity**: Detect non-stationarity via `gc_assess_stationarity()`
+2. **Identify Strata**: Suggest domain stratification via `gc_identify_strata()`
+3. **Model Per-Stratum**: Fit independent geostatistical models to each stratum
+4. **Compare Performance**: Evaluate per-stratum vs. global model quality
+
+## When to Use Stratification
+
+Stratification is appropriate when:
+- `gc_assess_stationarity()` detects significant non-stationarity (p < 0.05)
+- Study area has distinct compositional or geological domains
+- Sample size per stratum is sufficient (recommend ≥ 20 samples)
+- Local models improve prediction accuracy vs. global model
+
+# Step 1: Create Sample Data with Spatial Domains
+
+We'll create synthetic compositional data with two distinct domains that vary in sand 
+content. Each domain has different mean composition but overlapping spatial extent.
+
+```{r}
+# Create sample compositional data with two distinct spatial domains
+create_stratified_data <- function(n_per_domain = 100) {
+  # Domain 1: Higher sand content (sandy loam)
+  domain1 <- data.frame(
+    x = runif(n_per_domain, 0, 50),
+    y = runif(n_per_domain, 0, 50),
+    domain = "Domain 1 (Coarse)",
+    sand = rnorm(n_per_domain, 55, 8),
+    silt = rnorm(n_per_domain, 30, 6),
+    clay = rnorm(n_per_domain, 15, 5)
+  )
+  
+  # Domain 2: Lower sand content (clay loam)
+  domain2 <- data.frame(
+    x = runif(n_per_domain, 40, 100),
+    y = runif(n_per_domain, 40, 100),
+    domain = "Domain 2 (Fine)",
+    sand = rnorm(n_per_domain, 30, 7),
+    silt = rnorm(n_per_domain, 45, 6),
+    clay = rnorm(n_per_domain, 25, 6)
+  )
+  
+  data <- rbind(domain1, domain2)
+  
+  # Ensure valid compositions (0-100, sum to ~100)
+  total <- data$sand + data$silt + data$clay
+  data$sand <- pmax(pmin(data$sand / total * 100, 100), 0)
+  data$silt <- pmax(pmin(data$silt / total * 100, 100), 0)
+  data$clay <- pmax(pmin(data$clay / total * 100, 100), 0)
+  
+  # Recompute clay to ensure sum = 100
+  data$clay <- 100 - data$sand - data$silt
+  
+  return(data)
+}
+
+data <- create_stratified_data(n_per_domain = 100)
+cat("Sample Data Summary (n =", nrow(data), ")\n\n")
+print(head(data, 10))
+cat("\nComposition Statistics by Domain:\n")
+print(data %>% 
+  group_by(domain) %>% 
+  summarise(
+    Sand_Mean = mean(sand), Sand_SD = sd(sand),
+    Clay_Mean = mean(clay), Clay_SD = sd(clay),
+    N = n()
+  ))
+```
+
+# Step 2: Transform to ILR Space
+
+Before stratification, we need to transform compositions to the Isometric Log-Ratio (ILR) 
+space, which is appropriate for compositional data analysis.
+
+```{r}
+# Apply ILR transformation to get geometry-appropriate coordinates
+data <- data %>%
+  mutate(
+    # Simple ILR: treat first coordinate as log-ratio of two groups
+    ilr1 = log(sand / clay),    # Sand vs Clay (contrast 1)
+    ilr2 = log(silt / clay),    # Silt vs Clay (contrast 2)
+    true_domain = domain        # Keep true domain for later validation
+  ) %>%
+  select(x, y, sand, silt, clay, ilr1, ilr2, true_domain)
+
+cat("Data with ILR Transformation:\n")
+print(head(data, 10))
+
+# Visualize domains in composition space
+p1 <- ggplot(data, aes(x = sand, y = silt, color = true_domain)) +
+  geom_point(alpha = 0.6, size = 2) +
+  labs(title = "Compositional Space (% Sand vs % Silt)",
+       x = "Sand (%)", y = "Silt (%)", color = "True Domain") +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+# Visualize domains in ILR space
+p2 <- ggplot(data, aes(x = ilr1, y = ilr2, color = true_domain)) +
+  geom_point(alpha = 0.6, size = 2) +
+  labs(title = "ILR Space (log-ratio coordinates)",
+       x = "ILR1: log(Sand/Clay)", y = "ILR2: log(Silt/Clay)", 
+       color = "True Domain") +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+print(p1)
+print(p2)
+```
+
+# Step 3: Assess Stationarity
+
+Before applying per-stratum models, we assess whether the global model fits the entire 
+dataset adequately. Non-stationarity suggests domain-specific variation.
+
+```{r}
+cat("STEP 3: Assessing Overall Stationarity\n")
+cat("========================================\n\n")
+
+stationarity_result <- gc_assess_stationarity(
+  data = data,
+  x_col = "x",
+  y_col = "y",
+  ilr_cols = c("ilr1", "ilr2"),
+  plot = TRUE
+)
+
+cat("\nStationarity Assessment Results:\n")
+print(stationarity_result$recommendation)
+cat("\n\nStatistics by Quadrant:\n")
+print(stationarity_result$statistics)
+
+cat("\n\nInterpretation:\n")
+if (stationarity_result$p_value < 0.05) {
+  cat("- Non-stationarity DETECTED (p < 0.05)\n")
+  cat("- Composition varies significantly across space\n")
+  cat("- NEXT STEP: Apply gc_identify_strata() to suggest domains\n")
+} else {
+  cat("- No significant non-stationarity detected (p >= 0.05)\n")
+  cat("- Global model may be adequate\n")
+  cat("- Optional: Apply stratification for local refinement\n")
+}
+```
+
+# Step 4: Identify Spatial Strata
+
+Using stationarity assessment results, we now identify natural spatial domains via 
+clustering in PCA space.
+
+```{r}
+cat("\nSTEP 4: Identifying Spatial Strata\n")
+cat("===================================\n\n")
+
+# Method A: K-means stratification (fast, compact clusters)
+strata_kmeans <- gc_identify_strata(
+  data = data,
+  n_strata = 2,
+  method = "kmeans",
+  plot = TRUE
+)
+
+cat("\n\nK-means Stratification Results:\n")
+print(strata_kmeans$recommendation)
+cat("\n\nSummary Statistics by Stratum:\n")
+print(strata_kmeans$summary)
+
+# Visualize stratum assignments in spatial and compositional space
+strata_data <- data.frame(data, stratum = strata_kmeans$strata)
+
+p3 <- ggplot(strata_data, aes(x = x, y = y, color = stratum, shape = stratum)) +
+  geom_point(size = 3, alpha = 0.6) +
+  labs(title = "Identified Strata in Geographic Space",
+       x = "Easting (X)", y = "Northing (Y)", color = "Stratum", shape = "Stratum") +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+p4 <- ggplot(strata_data, aes(x = ilr1, y = ilr2, color = stratum, shape = stratum)) +
+  geom_point(size = 3, alpha = 0.6) +
+  labs(title = "Identified Strata in ILR Space",
+       x = "ILR1", y = "ILR2", color = "Stratum", shape = "Stratum") +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+print(p3)
+print(p4)
+
+# Compare identified strata with true domains
+accuracy <- mean(strata_kmeans$strata == 
+                  (as.numeric(strata_data$true_domain) - 1))
+cat("\n\nValidation:\n")
+cat(sprintf("Stratum identification accuracy: %.1f%%\n", accuracy * 100))
+cat("(Note: Perfect correspondence not expected; test goal is to detect variation)\n")
+```
+
+# Step 5: Method Comparison (K-means vs Hierarchical)
+
+Compare the two clustering methods to see which is more suitable for this data.
+
+```{r}
+cat("\nSTEP 5: Comparing Stratification Methods\n")
+cat("=========================================\n\n")
+
+# Method B: Hierarchical stratification (deterministic, hierarchical structure)
+strata_hierarchical <- gc_identify_strata(
+  data = data,
+  n_strata = 2,
+  method = "hierarchical",
+  plot = TRUE
+)
+
+cat("\n\nHierarchical Stratification Results:\n")
+print(strata_hierarchical$recommendation)
+cat("\n\nSummary Statistics by Stratum:\n")
+print(strata_hierarchical$summary)
+
+# Compare quality metrics
+comparison <- data.frame(
+  Method = c("K-means", "Hierarchical"),
+  N_Strata = c(strata_kmeans$n_strata, strata_hierarchical$n_strata),
+  Mean_Silhouette = c(
+    mean(strata_kmeans$silhouette_widths),
+    mean(strata_hierarchical$silhouette_widths)
+  ),
+  Min_Silhouette = c(
+    min(strata_kmeans$silhouette_widths),
+    min(strata_hierarchical$silhouette_widths)
+  ),
+  Max_Silhouette = c(
+    max(strata_kmeans$silhouette_widths),
+    max(strata_hierarchical$silhouette_widths)
+  )
+)
+
+cat("\n\nMethod Comparison (Silhouette Quality):\n")
+print(comparison)
+
+cat("\n\nRecommendations:\n")
+cat("- K-means: Faster for large datasets; better for finding compact, isolated clusters\n")
+cat("- Hierarchical: More stable; better for continuous or nested structures\n")
+cat("- Higher mean silhouette indicates better-separated clusters\n")
+```
+
+# Step 6: Fit Per-Stratum Models
+
+Now we fit independent geostatistical models to each identified stratum and compare 
+with the global model.
+
+```{r}
+cat("\nSTEP 6: Fitting Per-Stratum Models\n")
+cat("===================================\n\n")
+
+# Add stratum assignment to data
+strata_data <- data.frame(data, stratum = strata_kmeans$strata)
+
+# Fit models per stratum
+stratum_models <- list()
+stratum_results <- list()
+
+for (i in unique(strata_data$stratum)) {
+  cat(sprintf("\n--- Fitting model for Stratum %d (%d samples) ---\n", 
+              i, sum(strata_data$stratum == i)))
+  
+  # Extract stratum data
+  stratum_subset <- strata_data[strata_data$stratum == i, ]
+  
+  # Fit ILR model to stratum
+  model <- gc_ilr_model(
+    data = stratum_subset,
+    x_col = "x",
+    y_col = "y",
+    ilr_cols = c("ilr1", "ilr2"),
+    composition_cols = c("sand", "silt", "clay"),
+    plot = FALSE
+  )
+  
+  stratum_models[[as.character(i)]] <- model
+  
+  # Summarize model
+  stratum_results[[as.character(i)]] <- list(
+    stratum = i,
+    n_samples = nrow(stratum_subset),
+    mean_ilr1 = mean(stratum_subset$ilr1),
+    mean_ilr2 = mean(stratum_subset$ilr2),
+    sd_ilr1 = sd(stratum_subset$ilr1),
+    sd_ilr2 = sd(stratum_subset$ilr2),
+    mean_sand = mean(stratum_subset$sand),
+    mean_clay = mean(stratum_subset$clay)
+  )
+  
+  cat(sprintf("  Mean sand: %.1f%%, Mean clay: %.1f%%\n",
+              stratum_results[[as.character(i)]]$mean_sand,
+              stratum_results[[as.character(i)]]$mean_clay))
+}
+
+# Print per-stratum summary
+cat("\n\nPer-Stratum Model Summary:\n")
+results_df <- do.call(rbind, stratum_results)
+print(data.frame(results_df))
+
+cat("\n\nInterpretation:\n")
+cat("- Each stratum captures distinct compositional characteristics\n")
+cat("- Per-stratum standard deviations reveal local variability\n")
+cat("- Differences in mean composition justify stratification\n")
+```
+
+# Step 7: Custom Threshold Tuning
+
+Demonstrate how to adjust stratification sensitivity using custom silhouette thresholds.
+
+```{r}
+cat("\nSTEP 7: Custom Threshold Tuning\n")
+cat("==================================\n\n")
+
+# Default thresholds
+strata_default <- gc_identify_strata(
+  data = data,
+  n_strata = 2,
+  silhouette_thresholds = list(strong = 0.5, moderate = 0.25),
+  plot = FALSE
+)
+
+# More lenient thresholds (broader quality acceptance)
+strata_lenient <- gc_identify_strata(
+  data = data,
+  n_strata = 2,
+  silhouette_thresholds = list(strong = 0.3, moderate = 0.1),
+  plot = FALSE
+)
+
+# More strict thresholds (narrower quality acceptance)
+strata_strict <- gc_identify_strata(
+  data = data,
+  n_strata = 2,
+  silhouette_thresholds = list(strong = 0.7, moderate = 0.4),
+  plot = FALSE
+)
+
+threshold_comparison <- data.frame(
+  Threshold_Set = c("Default (0.5/0.25)", "Lenient (0.3/0.1)", "Strict (0.7/0.4)"),
+  Mean_Silhouette = c(
+    mean(strata_default$silhouette_widths),
+    mean(strata_lenient$silhouette_widths),
+    mean(strata_strict$silhouette_widths)
+  ),
+  Quality_Assessment = c(
+    strata_default$summary$Quality[1],
+    strata_lenient$summary$Quality[1],
+    strata_strict$summary$Quality[1]
+  )
+)
+
+cat("Threshold Sensitivity Analysis:\n")
+print(threshold_comparison)
+
+cat("\n\nGuidance:\n")
+cat("- Default (0.5/0.25): Recommended for most geostatistical applications\n")
+cat("- Lenient: Use when clustering trends are subtle\n")
+cat("- Strict: Use when strata must be very well-separated\n")
+cat("- Customize based on domain knowledge and validation results\n")
+```
+
+# Step 8: Workflow Summary and Best Practices
+
+```{r}
+cat("\n\nWORKFLOW SUMMARY\n")
+cat("================\n\n")
+
+cat("1. ASSESS STATIONARITY\n")
+cat("   └─ Run: gc_assess_stationarity()\n")
+cat("   └─ Indicates: Need for stratification\n\n")
+
+cat("2. IDENTIFY STRATA\n")
+cat("   └─ Run: gc_identify_strata()\n")
+cat("   └─ Provides: Domain assignments + quality metrics\n")
+cat("   └─ Choose: K-means (fast) or Hierarchical (stable)\n\n")
+
+cat("3. FIT PER-STRATUM MODELS\n")
+cat("   └─ Loop: gc_ilr_model() for each stratum\n")
+cat("   └─ Models: Independent of other strata\n")
+cat("   └─ Output: Stratum-specific parameters\n\n")
+
+cat("4. VALIDATE & COMPARE\n")
+cat("   └─ Metrics: Cross-validation, RMSE, coverage\n")
+cat("   └─ Compare: Per-stratum vs global models\n")
+cat("   └─ Decision: Stratification improves predictions?\n\n")
+
+cat("\nBEST PRACTICES:\n")
+cat("- Always start with gc_assess_stationarity()\n")
+cat("- Use set.seed() for reproducible stratification\n")
+cat("- Ensure n >= 20 per stratum for stable models\n")
+cat("- Cross-validate per-stratum model performance\n")
+cat("- Document stratum definitions for reproducibility\n")
+cat("- Consider computational cost of per-stratum modeling\n\n")
+
+cat("REFERENCES:\n")
+cat("- Aitchison, J. (1986). The Statistical Analysis of Compositional Data\n")
+cat("- Egozcue et al. (2003). Isometric logratio transformations for compositional data\n")
+cat("- IAMG CompositeWorks: www.iamg.org\n")
+```
+
+# Session Information
+
+```{r}
+sessionInfo()
+```

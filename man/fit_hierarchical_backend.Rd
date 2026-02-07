@@ -17,11 +17,17 @@ fit_hierarchical_backend(
 
 \item{prior_spec}{An object of class \code{"gc_prior_spec"}}
 
-\item{backend}{Character, backend selection: "analytical" (default), "stan", or "nimble"}
+\item{backend}{Character, backend selection: "analytical" (default), "stan", "nimble",
+"analytical_3d" (spatial decay), "stan_3d" (CAR prior), or "nimble_3d" (intrinsic CAR)}
 
 \item{verbose}{Logical, print progress (default TRUE)}
 
-\item{...}{Additional arguments passed to backend-specific functions}
+\item{...}{Additional arguments passed to backend-specific functions
+\itemize{
+\item For analytical_3d: zone_centers, spatial_decay, decay_power, decay_range
+\item For stan_3d: car_prior_scale, estimate_spatial_decay
+\item For nimble_3d: prior_spatial_scale
+}}
 }
 \value{
 An S3 object of class \code{"gc_hierarchical_fit"} with standardized structure:
@@ -36,5 +42,6 @@ An S3 object of class \code{"gc_hierarchical_fit"} with standardized structure:
 }
 \description{
 Route to appropriate backend (analytical, Stan, or Nimble) for fitting.
+Supports both standard and 3D spatial variants.
 }
 \keyword{internal}

@@ -106,7 +106,117 @@ print(sims)
 - **`gc_sim_composition()`** - Simulate and back-transform to original
   units; supports conditioning on observed data
 
+## Interactive Web Application
+
+**New in v0.2.0**: Geocoda Uncertainty Mapper provides a graphical interface for interactive uncertainty visualization without programming:
+
+```r
+library(geocoda)
+run_uncertainty_mapper()  # Opens browser-based dashboard
+```
+
+**Features**:
+- Upload your CSV data (or use built-in examples)
+- Configure hierarchical model visually
+- Run simulations with live progress tracking
+- Five interactive visualizations:
+  - Probability maps (threshold exceedance risk)
+  - Percentile maps (P10/P50/P90 uncertainty bands)
+  - Depth profiles (uncertainty by soil layer)
+  - 3D interactive scatter (compositional relationships)
+  - Risk curves (exceedance probabilities)
+- Export results (GeoTIFF, shapefile, JSON, HTML report)
+
+Perfect for decision-makers, educators, and rapid prototyping. See [inst/shiny/uncertainty_mapper/README.md](inst/shiny/uncertainty_mapper/README.md) for complete guide.
+
+---
+
 ## Advanced Features
+
+### Stratified Hierarchical Modeling (v3.0+)
+
+The package now supports **domain-aware geostatistical simulation** via stratified 
+hierarchical modeling. This extension handles non-stationarity common in real-world 
+soil systems:
+
+**Key capabilities**:
+- **Automatic domain detection**: `gc_identify_strata()` detects zones of statistical similarity
+- **Hierarchical estimation**: `gc_fit_hierarchical_model()` estimates zone-specific parameters with shrinkage pooling
+- **Per-zone simulation**: `gc_sim_hierarchical()` respects domain boundaries in ensemble generation
+- **Ensemble aggregation**: Per-zone statistics, percentile maps, probability thresholds
+- **Advanced diagnostics**: Cross-validation, entropy analysis, bootstrap uncertainty per zone
+- **Decision support**: Risk assessment under asymmetric costs; carbon stock accounting and compliance
+- **3D modeling**: `gc_fit_vgm_3d_per_zone()` and `gc_sim_hierarchical_3d_per_zone()` for depth-stratified simulation
+
+**Example**: Detect soil zones, model separately, then generate ensemble respecting boundaries:
+
+``` r
+# 1. Detect zones automatically
+strata <- gc_identify_strata(
+  data = soil_data,
+  comp_cols = c("SAND", "SILT", "CLAY")
+)
+
+# 2. Define hierarchy
+hierarchy <- gc_define_hierarchy(
+  data = soil_data,
+  comp_cols = c("SAND", "SILT", "CLAY"),
+  group_col = "zone"
+)
+
+# 3. Fit zone-specific parameters
+hz_fit <- gc_fit_hierarchical_model(
+  data = soil_data,
+  object = hierarchy
+)
+
+# 4. Ensemble simulation (zone-aware)
+ensemble <- gc_sim_hierarchical(
+  object = hz_fit,
+  n = 500,
+  zone_vector = strata$zone_assignments
+)
+
+# 5. Per-zone decisions (risk, carbon accounting)
+risk <- gc_risk_assessment_per_zone(
+  ensemble = ensemble,
+  zone_col = "zone_id",
+  thresholds = c(SAND = 50),
+  cost_matrix = cost_df
+)
+```
+
+See **Comprehensive Stratification Guide** in `.github/development/` for complete examples.
+
+See **Comprehensive Stratification Guide** in `.github/development/` for complete examples.
+
+---
+
+## Learning Pathways
+
+**Complete learning resources**: See [.github/development/VIGNETTE_INDEX.md](.github/development/VIGNETTE_INDEX.md) for 10 vignettes organized by skill level and topic.
+
+### Quick Start (Beginners)
+1. Run `vignette("Soil Texture Workflow")` - Core workflow concepts (20 min)
+2. Explore `run_uncertainty_mapper()` - Interactive visualization without code (10 min)
+3. Try `vignette("Ensemble Analysis & Risk Assessment")` - Decision-making (15 min)
+
+### Regional Mapper (SSURGO Focus)
+1. `vignette("SSURGO Integration")` - Query national soil database (20 min)
+2. Example: `examples/01_ssurgo_sda_integration.Rmd` - Live SSURGO queries (30 min)
+3. Example: `examples/03_stratified_hierarchical_modeling.Rmd` - Build regional model (45 min)
+
+### Advanced Statistician
+1. `vignette("Hierarchical Backends Deep Dive")` - Compare three backends (25 min)
+2. `vignette("Advanced Diagnostics")` - Validation framework (25 min)
+3. `vignette("3D Geostatistics with Stratigraphic Coordinates")` - Full 3D modeling (30 min)
+
+### Interactive Learning
+- **Shiny App**: `run_uncertainty_mapper()` - Visual parameter exploration
+- **FAQ & Troubleshooting**: `vignette("FAQ & Troubleshooting")`
+- **Parameter Guide**: `vignette("Parameter Selection")`
+
+---
 
 ### Model Types: Univariate vs LMC
 

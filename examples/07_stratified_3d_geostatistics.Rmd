@@ -1,0 +1,347 @@
+---
+title: "Stratified 3D Geostatistics: Lateral Domains × Depth Strata"
+author: "geocoda"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 11,
+  fig.height = 7,
+  dpi = 100
+)
+```
+
+# Stratified 3D Geostatistics
+
+This example demonstrates 3D geostatistical simulation respecting both lateral
+domain stratification and vertical depth structure. Combines domain-specific
+means with depth-dependent variability.
+
+## 1. Create Synthetic 3D Dataset
+
+```{r create-3d-data}
+library(geocoda)
+library(ggplot2)
+library(reshape2)
+
+set.seed(42)
+
+# Create three lateral zones in 100×100 km domain
+# Zone 1: Upland (x < 33)
+# Zone 2: Midslope (33 ≤ x < 67)
+# Zone 3: Lowland (x ≥ 67)
+
+n_samples <- 300
+zone_assignments <- cut(sample.int(100, n_samples, replace = TRUE),
+                        breaks = c(0, 33, 67, 100),
+                        labels = c("upland", "midslope", "lowland"))
+
+# 3D coordinates
+data_3d <- data.frame(
+  x = sample.int(100, n_samples, replace = TRUE),
+  y = sample.int(100, n_samples, replace = TRUE),
+  z = sample.int(100, n_samples, replace = TRUE), # depth 0-100 cm
+  zone_id = zone_assignments
+)
+
+# Zone-specific compositions (varying with depth)
+set.seed(42)
+for (i in seq_along(data_3d$zone_id)) {
+  zone <- as.character(data_3d$zone_id[i])
+  depth <- data_3d$z[i]
+  depth_factor <- 1 - (0.3 * depth / 100) # decrease variability with depth
+
+  if (zone == "upland") {
+    # Sandy uplands
+    sand <- rnorm(1, mean = 75, sd = 8 * depth_factor)
+    silt <- rnorm(1, mean = 15, sd = 5 * depth_factor)
+    clay <- rnorm(1, mean = 10, sd = 3 * depth_factor)
+  } else if (zone == "midslope") {
+    # Loamy midslopes
+    sand <- rnorm(1, mean = 55, sd = 10 * depth_factor)
+    silt <- rnorm(1, mean = 25, sd = 8 * depth_factor)
+    clay <- rnorm(1, mean = 20, sd = 5 * depth_factor)
+  } else { # lowland
+    # Clayey lowlands
+    sand <- rnorm(1, mean = 35, sd = 12 * depth_factor)
+    silt <- rnorm(1, mean = 30, sd = 10 * depth_factor)
+    clay <- rnorm(1, mean = 35, sd = 8 * depth_factor)
+  }
+
+  # Closure
+  total <- sand + silt + clay
+  data_3d$SAND[i] <- 100 * sand / total
+  data_3d$SILT[i] <- 100 * silt / total
+  data_3d$CLAY[i] <- 100 * clay / total
+}
+
+cat("3D Dataset Summary\n")
+cat("==================\n")
+cat(sprintf("Total samples: %d\n", nrow(data_3d)))
+cat(sprintf("Zones: %s\n", paste(unique(data_3d$zone_id), collapse = ", ")))
+cat(sprintf("Depth range: %d - %d cm\n", min(data_3d$z), max(data_3d$z)))
+cat("\nZone-specific composition profiles:\n")
+for (zone in unique(data_3d$zone_id)) {
+  zone_data <- data_3d[data_3d$zone_id == zone, ]
+  cat(sprintf("  %s: SAND=%.1f±%.1f, SILT=%.1f±%.1f, CLAY=%.1f±%.1f\n",
+              zone,
+              mean(zone_data$SAND), sd(zone_data$SAND),
+              mean(zone_data$SILT), sd(zone_data$SILT),
+              mean(zone_data$CLAY), sd(zone_data$CLAY)))
+}
+```
+
+## 2. Define Nested Hierarchy (Lateral × Depth)
+
+```{r define-nested-hierarchy}
+# Define hierarchy: 3 lateral zones × 3 depth strata = 9 hierarchical units
+h_nested <- gc_define_nested_hierarchy(
+  domain_zones = c("upland", "midslope", "lowland"),
+  depth_strata = c("shallow", "mid", "deep"),
+  depth_breaks = c(0, 30, 60, 100)
+)
+
+cat("Nested Hierarchy Structure\n")
+cat("==========================\n")
+cat(sprintf("Lateral domains: %s\n", paste(h_nested$domain_zones, collapse = ", ")))
+cat(sprintf("Depth strata: %s\n", paste(h_nested$depth_strata, collapse = ", ")))
+cat(sprintf("Total hierarchical units: %d\n\n", h_nested$n_units))
+print(h_nested$nested_units)
+```
+
+## 3. Fit Zone-Specific 3D Variograms
+
+```{r fit-3d-variograms}
+vgm_3d <- gc_fit_vgm_3d_per_zone(
+  data = data_3d,
+  zone_col = "zone_id",
+  value_col = "SAND",
+  model = "Sph"
+)
+
+cat("3D Variogram Summary by Zone\n")
+cat("============================\n\n")
+print("Zone Ranges:")
+print(vgm_3d$zone_ranges)
+
+cat("\n\nData Summary:\n")
+print(vgm_3d$data_summary)
+
+cat("\n\nInterpretation:\n")
+cat("- Lateral range: horizontal correlation distance\n")
+cat("- Vertical range: depth-dependent correlation distance\n")
+cat("- Anisotropy ratio: lateral_range / vertical_range\n")
+cat("  (ratio > 1: lateral more correlated than vertical)\n")
+```
+
+## 4. Fit Hierarchical Model
+
+```{r fit-hierarchical-model-3d}
+# Define hierarchy by zone only (HZM doesn't directly handle depth yet)
+hz_def <- gc_define_hierarchy(
+  data = data_3d,
+  comp_cols = c("SAND", "SILT", "CLAY"),
+  group_col = "zone_id",
+  var_order = "variance"
+)
+
+# Fit HZM
+hz_fit_3d <- gc_fit_hierarchical_model(
+  data = data_3d,
+  object = hz_def,
+  verbose = FALSE
+)
+
+cat("Hierarchical Model Fitted\n")
+cat("=========================\n")
+print(hz_fit_3d$hierarchy)
+```
+
+## 5. Get 3D Prediction Locations (Prediction Grid)
+
+```{r create-prediction-grid}
+# Create 2D grid for prediction
+grid_2d <- expand.grid(
+  x = seq(10, 90, by = 10),
+  y = seq(10, 90, by = 10)
+)
+
+# Add depth profile: predict at multiple depths
+grid_3d <- data.frame()
+for (depth in c(10, 30, 50, 75, 100)) {
+  grid_depth <- grid_2d
+  grid_depth$z <- depth
+  grid_3d <- rbind(grid_3d, grid_depth)
+}
+
+# Assign zones to grid points
+grid_3d$zone_id <- cut(grid_3d$x,
+                       breaks = c(0, 33, 67, 100),
+                       labels = c("upland", "midslope", "lowland"))
+
+cat("Prediction Grid\n")
+cat("===============\n")
+cat(sprintf("Total grid points: %d\n", nrow(grid_3d)))
+cat(sprintf("Grid extent: x=[%d,%d], y=[%d,%d], z=[%d,%d]\n",
+            min(grid_3d$x), max(grid_3d$x),
+            min(grid_3d$y), max(grid_3d$y),
+            min(grid_3d$z), max(grid_3d$z)))
+```
+
+## 6. Simulate 3D Hierarchical Ensemble
+
+```{r simulate-3d-ensemble}
+ensemble_3d <- gc_sim_hierarchical_3d_per_zone(
+  object = hz_fit_3d,
+  n = 100,
+  nested_hierarchy = h_nested,
+  coords = grid_3d,
+  zone_vector = grid_3d$zone_id
+)
+
+cat("3D Ensemble Generated\n")
+cat("====================\n")
+cat(sprintf("Realizations: %d\n", ensemble_3d$n_realizations))
+cat(sprintf("Locations per realization: %d\n", ensemble_3d$n_locations))
+cat(sprintf("Total ensemble points: %d\n\n", nrow(ensemble_3d$data)))
+
+# Check composition closure
+head(ensemble_3d$data)
+```
+
+## 7. Extract and Visualize Depth Profiles
+
+```{r depth-profiles}
+# Extract mean composition at different depths by zone
+profile_data <- data.frame()
+
+for (zone in c("upland", "midslope", "lowland")) {
+  for (depth in c(10, 30, 50, 75, 100)) {
+    subset <- ensemble_3d$data[
+      ensemble_3d$data$zone_id == zone & ensemble_3d$data$z == depth,
+    ]
+
+    if (nrow(subset) > 0) {
+      profile_data <- rbind(profile_data, data.frame(
+        zone = zone,
+        depth = depth,
+        SAND = mean(subset$SAND),
+        SILT = mean(subset$SILT),
+        CLAY = mean(subset$CLAY)
+      ))
+    }
+  }
+}
+
+cat("Zone Composition Profiles by Depth\n")
+cat("==================================\n")
+print(profile_data)
+
+# Visualize
+profile_long <- melt(profile_data, id.vars = c("zone", "depth"))
+
+p_profile <- ggplot(profile_long, aes(x = depth, y = value, color = variable, 
+                                      linetype = zone)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~variable) +
+  scale_x_reverse() +
+  coord_flip() +
+  labs(
+    title = "Compositional Depth Profiles by Zone",
+    x = "Depth (cm)",
+    y = "Proportion (%)",
+    color = "Component",
+    linetype = "Zone"
+  ) +
+  theme_minimal()
+
+print(p_profile)
+```
+
+## 8. Spatial Variability by Depth
+
+```{r spatial-variability-by-depth}
+# Compare lateral variability across depths
+variability_by_depth <- data.frame()
+
+for (depth in unique(ensemble_3d$data$z)) {
+  subset <- ensemble_3d$data[ensemble_3d$data$z == depth, ]
+
+  for (zone in unique(subset$zone_id)) {
+    zone_subset <- subset[subset$zone_id == zone, ]
+
+    # Compute coefficient of variation
+    cv_sand <- sd(zone_subset$SAND, na.rm = TRUE) / mean(zone_subset$SAND, na.rm = TRUE)
+
+    variability_by_depth <- rbind(variability_by_depth, data.frame(
+      depth = depth,
+      zone = zone,
+      cv_sand = cv_sand,
+      mean_sand = mean(zone_subset$SAND, na.rm = TRUE)
+    ))
+  }
+}
+
+p_variability <- ggplot(variability_by_depth, 
+                        aes(x = depth, y = cv_sand, color = zone, shape = zone)) +
+  geom_point(size = 3) +
+  geom_line(alpha = 0.5) +
+  scale_x_reverse() +
+  coord_flip() +
+  labs(
+    title = "SAND Content Variability by Depth",
+    x = "Depth (cm)",
+    y = "Coefficient of Variation",
+    color = "Zone",
+    shape = "Zone"
+  ) +
+  theme_minimal()
+
+print(p_variability)
+
+cat("\nNote: CV tends to decrease with depth (compaction effect)\n")
+```
+
+## 9. Best Practices for 3D Stratified Modeling
+
+### Zone Definition in 3D
+
+- **Lateral stratification**: Based on topography, geology, land use
+- **Vertical stratification**: Based on soil horizons, pedogenic processes
+- **Interaction**: Different zones may have distinct depth profiles
+
+### Variogram Fitting
+
+1. Ensure sufficient samples per zone (≥20)
+2. Compute 3D distances (not just 2D horizontal)
+3. Account for anisotropy (lateral ≠ vertical)
+4. Separate variograms per zone prevent over-smoothing
+
+### Hierarchical Modeling
+
+1. Define zones/strata meaningfully
+2. Fit HZM to account for multi-scale structure
+3. Simulate ensemble with depth-dependent variability
+4. Validate via cross-validation (Phase 3.1)
+
+### Ensemble Aggregation
+
+- Compute **per-zone statistics** (not global means)
+- Use **depth-stratified summaries** for interpretation
+- Map **uncertainty hotspots** (high entropy or wide CIs)
+
+## Summary
+
+3D stratified geostatistical modeling enables:
+
+1. **Domain-aware simulation**: Each zone gets zone-specific params
+2. **Depth integration**: Respects pedogenic processes (compaction, leaching)
+3. **Spatial correlation**: 3D variograms capture lateral + vertical structure
+4. **Ensemble-based inference**: Quantify uncertainty at any depth/location
+
+Use this workflow as a foundation for multi-scale risk assessment and resource mapping.

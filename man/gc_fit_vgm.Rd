@@ -12,7 +12,8 @@ gc_fit_vgm(
   width = NULL,
   aggregate = FALSE,
   correct.diagonal = 1.01,
-  fit.ranges = FALSE
+  fit.ranges = FALSE,
+  eigenvalue_tolerance = 1e-10
 )
 }
 \arguments{
@@ -43,6 +44,11 @@ numerical issues. Recommended range: 1.00-1.05. Use \code{1.01} for typical appl
 \item{fit.ranges}{Logical. If \code{FALSE} (default), fixes ranges to fitted values
 during LMC construction to avoid over-parameterization. If \code{TRUE}, allows
 range re-optimization when building LMC models.}
+
+\item{eigenvalue_tolerance}{Numeric, threshold for eigenvalue positivity check
+in LMC sill matrix (default \code{1e-10}). Smaller values (closer to zero) increase
+tolerance for numerical precision issues. Increase to 1e-8 or 1e-6 for
+poorly-conditioned matrices.}
 }
 \value{
 A list with:

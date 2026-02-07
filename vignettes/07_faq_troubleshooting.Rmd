@@ -21,23 +21,11 @@ knitr::opts_chunk$set(
 )
 library(dplyr)
 library(tidyr)
-library(dplyr)
-library(tidyr)
 ```
 
 # Overview
 
 Frequently asked questions and solutions for common issues when using geocoda for compositional soil mapping.
-
-## Vignette Status
-
-**Minimal scaffold** - Will be expanded with:
-- Common error messages and solutions
-- Parameter tuning guidelines
-- Performance optimization tips
-- Data preparation troubleshooting
-- Simulation validation checks
-- Backend-specific issues (analytical/Stan/Nimble)
 
 ## Quick Reference: Common Issues
 

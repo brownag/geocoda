@@ -1,6 +1,5 @@
 ---
 title: "End-to-End Soil Texture Simulation from SSURGO Data"
-subtitle: "Phase 4 Integration: soilDB SDA + geocoda Geostatistical Simulation"
 author: "geocoda Package"
 date: "`r format(Sys.Date(), '%B %d, %Y')`"
 output:

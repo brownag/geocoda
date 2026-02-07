@@ -42,6 +42,47 @@ This vignette covers:
 - See Vignette 02 for ensemble analysis techniques to use with hierarchical results
 - See Vignette 10 for 3D hierarchical modeling (adds depth dimension)
 
+# Stratified Domains as Zones
+
+## From Data-Driven Strata to Intentional Zones
+
+The geocoda package provides two complementary approaches for domain-specific modeling:
+
+**Stratification** (`gc_identify_strata()`):
+- **Objective**: Discover natural clusters in data
+- **Method**: PCA-based clustering on ILR dimensions
+- **Output**: Factor of stratum assignments based on compositional similarity
+- **Use when**: You want data-driven domain discovery
+
+**Hierarchical Zones** (`gc_define_hierarchy()`):
+- **Objective**: Define intentional analysis levels
+- **Method**: Pre-specified zone structure (spatial, geological, or user-defined)
+- **Output**: Zone assignments inform hierarchical model fitting
+- **Use when**: You have known geological domains or management zones
+
+## Converting Strata to Zones
+
+Stratification output can become hierarchical zones! This combines the best of both approaches:
+
+1. **Run `gc_assess_stationarity()`** to detect compositional non-stationarity across the study area
+2. **Run `gc_identify_strata()`** to objectively partition the domain based on ILR clusters
+3. **Use stratum assignments as zone definitions** in `gc_define_hierarchy()`
+4. **Apply hierarchical modeling** with zone-specific shrinkage pooling
+
+**Example workflow**: A large region shows non-stationary composition. Rather than manually defining zones a priori (risky), run stratification analysis to discover natural zones, then use those in hierarchical modeling for robust, data-informed parameter estimation.
+
+For a complete example of this workflow, see `examples/03_stratified_hierarchical_modeling.Rmd`.
+
+## When to Combine Stratification with HZM
+
+Consider this combined approach when:
+- Non-stationarity is significant (p < 0.05 from `gc_assess_stationarity()`)
+- Natural spatial clusters appear in compositional PCA space
+- You want domain-specific parameter estimates with shrinkage pooling
+- You seek to balance data-driven discovery with hierarchical inference
+
+The next section introduces conventional zone definitions (fixed by geology or management), but the principles apply equally to strata-derived zones.
+
 # Setup
 
 ```{r, message=FALSE}

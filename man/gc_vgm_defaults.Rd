@@ -4,13 +4,19 @@
 \alias{gc_vgm_defaults}
 \title{Suggest Reasonable Variogram Default Parameters}
 \usage{
-gc_vgm_defaults(ilr_params, extent)
+gc_vgm_defaults(ilr_params, extent, range_ratio = 1/3, nugget_ratio = 0.01)
 }
 \arguments{
 \item{ilr_params}{A list returned by \code{gc_ilr_params()}.}
 
 \item{extent}{A numeric vector of length 4: \code{c(xmin, ymin, xmax, ymax)},
 or a spatial object (sf, terra) from which extent can be extracted.}
+
+\item{range_ratio}{Numeric, ratio applied to spatial extent diagonal to suggest
+range parameter (default 1/3, i.e., range = extent_diagonal / 3).}
+
+\item{nugget_ratio}{Numeric, fraction of mean sill to suggest as nugget effect
+(default 0.01, i.e., 1\% of sill).}
 }
 \value{
 A list containing:

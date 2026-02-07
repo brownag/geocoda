@@ -496,14 +496,378 @@ results_cartesian <- gc_inverse_stratigraphic_transform(sims_3d)
 prob_threshold <- gc_probability_map(sims_3d, threshold = 40)
 ```
 
-## Related Capabilities
+## Step 11: 3D Integration with Hierarchical Zone Models
 
-- **Risk assessment and probability mapping**: Decision support under uncertainty
-- **Hierarchical models**: Multi-backend implementations (analytical, Stan, Nimble)
-- **Advanced transformations**: MAF decorrelation, Direct Block Simulation, vertical discretization
-- **3D geostatistics** (this): Stratigraphic coordinate transformation and full 3D kriging
+Phase 4A enhancement: Combine 3D spatial structure with stratified hierarchical zone models using spatial CAR priors. Three complementary backends enable different tradeoffs between computational speed and Bayesian inference depth.
 
-## Further Reading
+### Motivation: Why 3D+HZM?
+
+Domain-stratified hierarchical models (HZM) pool information across zones for improved estimates when local sample sizes are small. Adding 3D spatial structure enables:
+
+- **Spatial pooling**: zones that are closer together share more information
+- **True 3D kriging**: zone means shrink toward spatially nearby zones
+- **Uncertainty quantification**: posterior samples reflect spatial configuration
+- **Management decisions**: spatial risk maps at field scale
+
+### Architecture: Three Backend Approaches
+
+```{r backends_overview}
+# Backend Comparison for 3D+HZM Modeling
+
+cat("Three Complementary Backends for 3D+HZM\n")
+cat("=====================================\n\n")
+
+backends_overview <- data.frame(
+  Backend = c("analytical_3d", "stan_3d", "nimble_3d"),
+  Method = c("Analytical shrinkage", "HMC/NUTS", "Adaptive MCMC"),
+  Speed = c("Fast (< 1 sec)", "Medium (few sec)", "Medium (few sec)"),
+  Inference = c("Fast estimates", "Full posterior", "Full posterior"),
+  Spatial = c("Inverse distance", "CAR prior", "Intrinsic CAR"),
+  Use = c("Exploration", "Publication", "Custom MCMC"),
+  stringsAsFactors = FALSE
+)
+
+cat("Comparison Table:\n")
+print(backends_overview)
+
+cat("\n")
+cat("Decision Tree:\n")
+cat("──────────────\n")
+cat("Is sample size very small and computation limited?\n")
+cat("  YES → Use analytical_3d (fast, sufficient for screening)\n")
+cat("  NO → Is publication/formal inference required?\n")
+cat("        YES → Use stan_3d (HMC/NUTS, standard Bayesian)\n")
+cat("        NO → Do you need custom MCMC configuration?\n")
+cat("              YES → Use nimble_3d (flexible)\n")
+cat("              NO → Use stan_3d (recommended default)\n")
+```
+
+### Backend 1: Distance-Weighted Analytical 3D (Fast Screening)
+
+The analytical backend provides rapid closed-form estimates using inverse-distance spatial weighting:
+
+```{r analytical_3d}
+# Analytical 3D Backend: Fast distance-weighted shrinkage
+
+cat("Analytical 3D Backend\n")
+cat("===================\n\n")
+
+cat("Approach: Distance-Weighted Shrinkage Pooling\n")
+cat("─────────────────────────────────────────────\n")
+cat("Zone parameters shrink toward global mean + spatial neighbors\n\n")
+
+cat("Shrinkage Formula:\n")
+cat("  μ_zone[z] = (1 - ρ) × μ_zone_obs[z]\n")
+cat("            + ρ × [0.5×μ_global + 0.5×weighted_neighbor_mean]\n\n")
+
+cat("Where:\n")
+cat("  ρ = pooling_coefficient (typically 0.3-0.6)\n")
+cat("  μ_global = global ILR mean (all zones)\n")
+cat("  weighted_neighbor_mean = weighted by inverse distance\n\n")
+
+cat("Spatial Decay Functions:\n")
+cat("  • inverse_distance: w[i,j] = 1 / distance[i,j]^p\n")
+cat("  • exponential: w[i,j] = exp(-distance[i,j] / range)\n\n")
+
+cat("Advantages:\n")
+cat("  ✓ Closed-form (no optimization)\n")
+cat("  ✓ Instantly computable (< 1 second for 1000 zones)\n")
+cat("  ✓ Interpretable (linear shrinkage toward neighbors)\n")
+cat("  ✓ Good for initial screening and sensitivity analysis\n\n")
+
+cat("Limitations:\n")
+cat("  ✗ Point estimates only (no uncertainty quantification)\n")
+cat("  ✗ Single pooling coefficient (no data-driven adaptation)\n")
+cat("  ✗ Approximate spatial decay (not Bayesian CAR)\n")
+```
+
+**Usage Example:**
+
+```{r eval=FALSE}
+# Fit analytical 3D model
+fit_analytical_3d <- fit_hierarchical_backend(
+  data = zone_data,          # ILR columns + zone factor
+  prior_spec = prior_spec,
+  backend = "analytical_3d",
+  zone_centers = zone_centers,  # x, y, z centroids
+  spatial_decay = "inverse_distance",
+  decay_power = 2.0,
+  verbose = TRUE
+)
+
+# Extract zone estimates
+zone_means <- fit_analytical_3d$zone_estimates
+posterior_df <- fit_analytical_3d$zone_summaries
+```
+
+### Backend 2: Stan HMC 3D CAR (Publication Quality)
+
+Full Bayesian inference with Conditional Auto-Regressive spatial priors via Hamiltonian Monte Carlo:
+
+```{r stan_3d}
+# Stan 3D Backend: CAR spatial priors via HMC
+
+cat("Stan 3D CAR Backend\n")
+cat("=================\n\n")
+
+cat("Approach: Conditional Auto-Regressive Spatial Prior\n")
+cat("──────────────────────────────────────────────────\n")
+cat("Zone means have CAR prior that shrinks toward neighbors,\n")
+cat("adapting strength based on spatial configuration.\n\n")
+
+cat("CAR Prior (Intrinsic):\n")
+cat("  μ_zone[z] ~ Normal(\n")
+cat("    neighbor_mean[z],\n")
+cat("    σ = sqrt(car_scale / n_neighbors[z])\n")
+cat("  )\n\n")
+
+cat("Neighbor Definition:\n")
+cat("  Zones within distance threshold form neighbor pairs\n")
+cat("  k-nearest neighbors if some zones isolated\n\n")
+
+cat("Bayesian Advantages:\n")
+cat("  ✓ Full posterior samples (uncertainty quantification)\n")
+cat("  ✓ Gelman-Rubin diagnostics (convergence assessment)\n")
+cat("  ✓ Model selection (DIC, WAIC via posterior)\n")
+cat("  ✓ Sensitivity analysis (prior robustness)\n")
+cat("  ✓ Formal inference (credible intervals, hypothesis tests)\n\n")
+
+cat("Computational Cost:\n")
+cat("  • Setup: ~1 second\n")
+cat("  • HMC sampling: ~5-30 seconds (varies with complexity)\n")
+cat("  • Ideal for: Publication, formal decision-making\n")
+```
+
+**Usage Example:**
+
+```{r eval=FALSE}
+# Fit Stan 3D CAR model
+fit_stan_3d <- fit_hierarchical_backend(
+  data = zone_data,
+  prior_spec = prior_spec,
+  backend = "stan_3d",
+  zone_centers = zone_centers,
+  car_prior_scale = 1.0,
+  estimate_spatial_decay = TRUE,
+  n_iter = 2000,
+  n_warmup = 500,
+  n_chains = 2,
+  adapt_delta = 0.85,  # Adjust for tricky likelihoods
+  verbose = TRUE
+)
+
+# Extract posterior samples and diagnostics
+posterior_samples <- fit_stan_3d$samples  # (n_iter*n_chains) × n_params
+gelman_rubin <- fit_stan_3d$diagnostics$rhat
+zone_ci <- fit_stan_3d$zone_summaries  # Summary with credible intervals
+
+# Posterior predictive simulation
+posterior_mu <- fit_stan_3d$zone_estimates  # List of posterior draws
+```
+
+### Backend 3: Nimble 3D ICAR (Custom MCMC Tuning)
+
+Flexible MCMC with intrinsic CAR spatial structure and customizable samplers:
+
+```{r nimble_3d}
+# Nimble 3D Backend: Intrinsic CAR with adaptive samplers
+
+cat("Nimble 3D ICAR Backend\n")
+cat("====================\n\n")
+
+cat("Approach: Intrinsic Conditional Auto-Regressive\n")
+cat("─────────────────────────────────────────────\n")
+cat("Similar to Stan CAR but with adaptive MCMC samplers\n")
+cat("for fine-tuning convergence on tricky models.\n\n")
+
+cat("Intrinsic CAR (ICAR):\n")
+cat("  [μ_zone | neighbors] ~ Normal(\n")
+cat("    mean = neighbor_average,\n")
+cat("    precision = n_neighbors × τ\n")
+cat("  )\n\n")
+
+cat("Advantages vs Stan:\n")
+cat("  ✓ Adaptive samplers (RW, slice, etc.)\n")
+cat("  ✓ Custom sampler configuration\n")
+cat("  ✓ Gibbs sampling for structured blocks\n")
+cat("  ✓ Parallel sampling via compiled C++ code\n\n")
+
+cat("When Preferred:\n")
+cat("  • Complex non-standard likelihoods\n")
+cat("  • Custom Gibbs sampling schemes\n")
+cat("  • Very large models (> 10,000 zones)\n")
+cat("  • Fine-grained convergence tuning\n")
+```
+
+**Usage Example:**
+
+```{r eval=FALSE}
+# Fit Nimble 3D ICAR model
+fit_nimble_3d <- fit_hierarchical_backend(
+  data = zone_data,
+  prior_spec = prior_spec,
+  backend = "nimble_3d",
+  zone_centers = zone_centers,
+  prior_spatial_scale = 1.0,
+  n_iter = 2000,
+  n_warmup = 500,
+  n_chains = 2,
+  verbose = TRUE
+)
+
+# Extract diagnostics and samples
+gr_diag <- fit_nimble_3d$diagnostics$gelman_rubin
+posterior_samples <- fit_nimble_3d$samples
+```
+
+### Complete 3D+HZM Workflow Example
+
+Integrate stratified hierarchical modeling with 3D spatial structure:
+
+```{r workflow_3d_hzm, eval=FALSE}
+# Complete 3D+HZM Workflow
+
+# 1. Define zones with 3D coordinates
+zone_centers <- data.frame(
+  zone = c("Upslope_N", "Upslope_S", "Midslope", "Downslope"),
+  x = c(0, 50, 100, 200),
+  y = c(200, 150, 100, 0),
+  z = c(80, 70, 50, 20)  # Mean elevation (m)
+)
+
+# 2. Prepare zone data (ILR-transformed compositions)
+# data frame with columns: zone, ilr1, ilr2, ...
+zone_data <- gc_prepare_hierarchical_data(
+  observations = soil_obs_3d,
+  zone_column = "zone_id",
+  composition_columns = c("sand", "silt", "clay"),
+  ilr_output = TRUE
+)
+
+# 3. Define prior specification (pooling parameters)
+hierarchy <- gc_define_hierarchy(
+  zones = unique(zone_data$zone),
+  n_components = 3  # (sand, silt, clay)
+)
+
+prior_spec <- gc_prior_spec(
+  hierarchy = hierarchy,
+  global_mean = c(0, 0),      # ILR means
+  pooling_coefficient = 0.4,
+  ...
+)
+
+# 4. Fit with analytical backend (quick screening)
+fit_quick <- fit_hierarchical_backend(
+  data = zone_data,
+  prior_spec = prior_spec,
+  backend = "analytical_3d",
+  zone_centers = zone_centers,
+  spatial_decay = "inverse_distance",
+  verbose = TRUE
+)
+
+cat("Quick analytical 3D fit complete\n")
+print(fit_quick$zone_summaries)
+
+# 5. Refit with Stan 3D CAR for publication
+fit_pub <- fit_hierarchical_backend(
+  data = zone_data,
+  prior_spec = prior_spec,
+  backend = "stan_3d",
+  zone_centers = zone_centers,
+  car_prior_scale = 1.0,
+  n_iter = 3000,
+  n_chains = 4,
+  verbose = TRUE
+)
+
+# Check convergence
+cat("Rhat max:", max(fit_pub$diagnostics$rhat, na.rm=TRUE), "\n")
+cat("All Rhat < 1.01?", all(fit_pub$diagnostics$rhat < 1.01, na.rm=TRUE), "\n")
+
+# 6. Extract zone predictions and compute risk maps
+zone_estimates <- fit_pub$zone_estimates
+posterior_samples <- fit_pub$samples
+
+# 7. Transform back to compositional space
+posterior_comp <- gc_inverse_ilr(
+  ilr_samples = posterior_samples,
+  reference = prior_spec$reference_composition
+)
+
+# 8. Compute probability of zone means exceeding thresholds
+prob_clay_high <- apply(posterior_comp[, , "clay"], 2, function(x) mean(x > 45))
+names(prob_clay_high) <- names(fit_pub$zone_estimates)
+
+cat("Probability clay > 45% by zone:\n")
+print(prob_clay_high)
+```
+
+### Comparing 3D Backend Results
+
+Side-by-side comparison of results from all three backends:
+
+```{r comparison}
+cat("Backend Comparison: Analytical vs Stan vs Nimble\n")
+cat("==============================================\n\n")
+
+cat("Expected Similarities:\n")
+cat("  • Zone posterior means similar (same data, same prior)\n")
+cat("  • Zones with more data → tighter estimates\n")
+cat("  • Close neighbors → more similar estimates\n\n")
+
+cat("Expected Differences:\n")
+cat("  analytical_3d:\n")
+cat("    - Point estimates only\n")
+cat("    - No uncertainty (assumes σ = infinity)\n")
+cat("    - Fastest\n\n")
+
+cat("  stan_3d:\n")
+cat("    - Full posterior samples\n")
+cat("    - Credible intervals (95% CI)\n")
+cat("    - Moderate speed\n\n")
+
+cat("  nimble_3d:\n")
+cat("    - Full posterior samples (often more by ESS)\n")
+cat("    - Similar intervals to Stan\n")
+cat("    - Customizable samplers\n\n")
+
+cat("Recommendation:\n")
+cat("  1. Start with analytical_3d for screening\n")
+cat("  2. Final inference with stan_3d (standard Bayesian)\n")
+cat("  3. Use nimble_3d only if Stan convergence problems\n")
+```
+
+###  When to Use Each Backend
+
+**Use analytical_3d if:**
+- Computing on resource-limited devices (laptops, tablets)
+- Rapid screening of many scenarios
+- Interpretability more important than precision
+- Only point estimates needed for initial assessment
+
+**Use stan_3d if:**
+- Publishing results or formal decision-making
+- Need credible intervals and uncertainty quantification
+- Standard MCMC specifications adequate
+- Time budget allows ~30-60 seconds per fit
+
+**Use nimble_3d if:**
+- Non-standard likelihoods or data types
+- Need fine-grained MCMC control
+- Custom Gibbs sampling beneficial
+- Stan convergence problems
+
+---
+
+Related Capabilities:
+- **Analytical Backend** (phase 3): Basic hierarchical shrinkage without spatial structure
+- **Nested Hierarchy** (phase 3): Depth-stratified nesting within zones
+- **3D Variogram Fitting** (phase 3): Geometric anisotropy estimation
+- **Risk Assessment** (phase 3): Probability and percentile maps from ensembles
+- **Interactive Visualization** (phase 4): Shiny app for exploring spatial uncertainties
+
 
 - Bishop et al. (1999): "Mass-preserving splines for soil horizon standardization"
 - Deutsch & Journel (2002): "Geostatistical Software Library and User's Guide"

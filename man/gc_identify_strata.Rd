@@ -4,7 +4,13 @@
 \alias{gc_identify_strata}
 \title{Identify Spatial Strata from PCA Clustering}
 \usage{
-gc_identify_strata(data, n_strata = 2, method = "kmeans", plot = TRUE)
+gc_identify_strata(
+  data,
+  n_strata = 2,
+  method = "kmeans",
+  plot = TRUE,
+  silhouette_thresholds = list(strong = 0.5, moderate = 0.25)
+)
 }
 \arguments{
 \item{data}{A data frame or sf object with columns \code{x}, \code{y} for spatial coordinates
@@ -18,16 +24,24 @@ uses K-means clustering; \code{"hierarchical"} uses hierarchical clustering with
 automatic cut height detection.}
 
 \item{plot}{Logical. If \code{TRUE} (default), visualize strata spatially and via PCA.}
+
+\item{silhouette_thresholds}{List with named elements \code{strong} and \code{moderate}
+specifying thresholds for clustering quality classification. Default is
+\code{list(strong = 0.5, moderate = 0.25)}. Mean silhouette widths above \code{strong}
+are classified as "strong"; between \code{moderate} and \code{strong} as "moderate";
+below \code{moderate} as "weak".}
 }
 \value{
 A list containing:
 \itemize{
 \item \code{strata}: Factor vector indicating stratum membership for each observation
 \item \code{n_strata}: Number of identified strata
-\item \code{cluster_centers}: Cluster centers in PCA space
+\item \code{cluster_centers}: Cluster centers in PCA space (K-means only)
 \item \code{silhouette_widths}: Silhouette widths for each observation (quality of assignment)
+\item \code{pca_loadings}: PCA loadings matrix (rotation; interpretation of PC axes)
+\item \code{pca_scores}: Full PCA score matrix for all observations
 \item \code{recommendation}: Character string with interpretation and suggested actions
-\item \code{summary}: Data frame with stratum-wise statistics
+\item \code{summary}: Data frame with stratum-wise statistics (N, mean silhouette, quality)
 }
 }
 \description{
@@ -38,23 +52,93 @@ within the study area, useful for domain stratification when non-stationarity is
 \details{
 \strong{Methodology}:
 \enumerate{
-\item Perform PCA on ILR values
-\item Apply K-means clustering on PC1-PC2 scores
-\item Assign each spatial location to a cluster/stratum
+\item Perform PCA on ILR values (with centering and scaling)
+\item Extract PC1-PC2 scores (retains 70-85\% of variance for compositional data)
+\item Apply K-means or hierarchical clustering on PCA scores
+\item Compute silhouette widths for quality assessment
 \item Optionally optimize cluster count via silhouette analysis
 }
 
 \strong{Interpretation}:
 \itemize{
-\item Silhouette width: -1 (worst assignment) to +1 (best assignment)
-\item Mean silhouette > 0.5 indicates strong clustering
+\item Silhouette width ranges from -1 (worst assignment) to +1 (best assignment)
+\item Per-observation values <0 suggest possible misclassification
+\item Mean silhouette above \code{silhouette_thresholds$strong} indicates strong clustering
 \item Strata with low silhouette widths may need adjustment (merge or increase n_strata)
+}
+
+\strong{Computational Complexity}:
+\itemize{
+\item \strong{Time}: O(n·p) for PCA + O(n·k) for K-means or O(n²log n) for hierarchical clustering
+where n = number of samples, p = number of ILR dimensions, k = number of clusters
+\item \strong{Space}: O(n·p) for PCA matrix storage
+\item \strong{Typical Performance}:
+\itemize{
+\item n=100-500: 10-50ms (fast)
+\item n=500-5000: 100-500ms (acceptable)
+\item n>10,000: 5+ seconds (consider pre-stratification or MAF-reduction)
+}
+}
+
+\strong{Numerical Stability}:
+\itemize{
+\item PCA is scaled (centering and scaling via \code{scale=TRUE}), robust to different ILR ranges
+\item ILR transformation upstream ensures compositional geometry is respected
+\item Euclidean distance on ILR-transformed PCA scores is appropriate for compositional
+clustering (ILR preserves Aitchison distance structure)
+\item Silhouette metric assumes Euclidean geometry; valid after ILR transformation
+\item K-means is non-deterministic (controlled via \code{nstart=10}); use \code{set.seed()} for
+reproducible results
+\item Hierarchical clustering (Ward.D2) is deterministic
+}
+
+\strong{When to Use}:
+\itemize{
+\item After detecting non-stationarity via \code{gc_assess_stationarity()}
+\item When sample size permits per-stratum analysis (recommend ≥20 samples per stratum)
+\item When local spatial domains have distinct compositional characteristics
+\item Before fitting stratum-specific models via \code{gc_ilr_model()} or \code{gc_fit_hierarchical_model()}
+}
+
+\strong{Choosing K-means vs Hierarchical}:
+\itemize{
+\item \strong{K-means}: Faster, suitable for large datasets (n>5000), finds compact clusters;
+nondeterministic (set seed for reproducibility)
+\item \strong{Hierarchical}: More stable, produces dendrogram for cut-height exploration,
+preserves compositional structure via Ward linkage; slower for large n
+\item \strong{Recommendation}: Start with K-means; use hierarchical if clusters are continuous
+or if reproducibility is critical
+}
+
+\strong{Interpreting Silhouette Widths}:
+\itemize{
+\item \strong{Per-observation}: Range -1 to +1; >0.5 is well-clustered; <0 is possibly misclassified
+\item \strong{Mean silhouette}: Summary quality across all observations
+\itemize{
+\item Above \code{strong} threshold (default 0.5): Strong clustering structure
+\item Between \code{moderate} and \code{strong} (default 0.25-0.5): Moderate structure
+\item Below \code{moderate}: Weak structure; consider merging strata or checking data
+}
+\item Default thresholds reflect geostatistical best practices but are customizable
+}
+
+\strong{Troubleshooting}:
+\itemize{
+\item \strong{Poor quality (quality = "weak")}:
+Try the alternative clustering method (\code{hierarchical} if using K-means, vice versa),
+check for continuous compositional gradients, or increase \code{n_strata}
+\item \strong{Too many small strata}:
+Merge strata manually via factor re-assignment or increase \code{silhouette_thresholds$strong}
+\item \strong{Non-reproducible clusters}:
+Set \code{set.seed()} before calling; use \code{method = "hierarchical"} for deterministic results
+\item \strong{Performance issues (n>10,000)}:
+Pre-stratify spatially or apply MAF-based dimensionality reduction before stratification
 }
 
 \strong{Usage in Workflow}:
 After detecting non-stationarity via \code{gc_assess_stationarity()}, use this function
 to suggest how to partition the domain. Then apply the modeling workflow independently
-to each stratum for improved modeling.
+to each stratum for improved modeling. See examples for complete workflow.
 }
 \examples{
 \dontrun{
@@ -79,4 +163,10 @@ stratum_2 <- data[strata_result$strata == 2, ]
 # ... apply gc_ilr_model(), gc_sim_composition() separately
 }
 
+}
+\seealso{
+\code{\link[=gc_assess_stationarity]{gc_assess_stationarity()}} for detecting when stratification is needed;
+\code{\link[=gc_ilr_model]{gc_ilr_model()}} for fitting models to individual strata;
+\code{\link[=gc_define_hierarchy]{gc_define_hierarchy()}} for constructing zone hierarchies from strata;
+\code{\link[=gc_fit_hierarchical_model]{gc_fit_hierarchical_model()}} for zone-aware hierarchical modeling.
 }

@@ -12,31 +12,97 @@
 #'   uses K-means clustering; `"hierarchical"` uses hierarchical clustering with
 #'   automatic cut height detection.
 #' @param plot Logical. If `TRUE` (default), visualize strata spatially and via PCA.
+#' @param silhouette_thresholds List with named elements `strong` and `moderate`
+#'   specifying thresholds for clustering quality classification. Default is
+#'   `list(strong = 0.5, moderate = 0.25)`. Mean silhouette widths above `strong`
+#'   are classified as "strong"; between `moderate` and `strong` as "moderate";
+#'   below `moderate` as "weak".
 #'
 #' @return A list containing:
 #'   - `strata`: Factor vector indicating stratum membership for each observation
 #'   - `n_strata`: Number of identified strata
-#'   - `cluster_centers`: Cluster centers in PCA space
+#'   - `cluster_centers`: Cluster centers in PCA space (K-means only)
 #'   - `silhouette_widths`: Silhouette widths for each observation (quality of assignment)
+#'   - `pca_loadings`: PCA loadings matrix (rotation; interpretation of PC axes)
+#'   - `pca_scores`: Full PCA score matrix for all observations
 #'   - `recommendation`: Character string with interpretation and suggested actions
-#'   - `summary`: Data frame with stratum-wise statistics
+#'   - `summary`: Data frame with stratum-wise statistics (N, mean silhouette, quality)
 #'
 #' @details
 #' **Methodology**:
-#' 1. Perform PCA on ILR values
-#' 2. Apply K-means clustering on PC1-PC2 scores
-#' 3. Assign each spatial location to a cluster/stratum
-#' 4. Optionally optimize cluster count via silhouette analysis
+#' 1. Perform PCA on ILR values (with centering and scaling)
+#' 2. Extract PC1-PC2 scores (retains 70-85% of variance for compositional data)
+#' 3. Apply K-means or hierarchical clustering on PCA scores
+#' 4. Compute silhouette widths for quality assessment
+#' 5. Optionally optimize cluster count via silhouette analysis
 #'
 #' **Interpretation**:
-#' - Silhouette width: -1 (worst assignment) to +1 (best assignment)
-#' - Mean silhouette > 0.5 indicates strong clustering
+#' - Silhouette width ranges from -1 (worst assignment) to +1 (best assignment)
+#' - Per-observation values <0 suggest possible misclassification
+#' - Mean silhouette above `silhouette_thresholds$strong` indicates strong clustering
 #' - Strata with low silhouette widths may need adjustment (merge or increase n_strata)
+#'
+#' **Computational Complexity**:
+#' - **Time**: O(n·p) for PCA + O(n·k) for K-means or O(n²log n) for hierarchical clustering
+#'   where n = number of samples, p = number of ILR dimensions, k = number of clusters
+#' - **Space**: O(n·p) for PCA matrix storage
+#' - **Typical Performance**:
+#'   - n=100-500: 10-50ms (fast)
+#'   - n=500-5000: 100-500ms (acceptable)
+#'   - n>10,000: 5+ seconds (consider pre-stratification or MAF-reduction)
+#'
+#' **Numerical Stability**:
+#' - PCA is scaled (centering and scaling via `scale=TRUE`), robust to different ILR ranges
+#' - ILR transformation upstream ensures compositional geometry is respected
+#' - Euclidean distance on ILR-transformed PCA scores is appropriate for compositional
+#'   clustering (ILR preserves Aitchison distance structure)
+#' - Silhouette metric assumes Euclidean geometry; valid after ILR transformation
+#' - K-means is non-deterministic (controlled via `nstart=10`); use `set.seed()` for
+#'   reproducible results
+#' - Hierarchical clustering (Ward.D2) is deterministic
+#'
+#' **When to Use**:
+#' - After detecting non-stationarity via `gc_assess_stationarity()`
+#' - When sample size permits per-stratum analysis (recommend ≥20 samples per stratum)
+#' - When local spatial domains have distinct compositional characteristics
+#' - Before fitting stratum-specific models via `gc_ilr_model()` or `gc_fit_hierarchical_model()`
+#'
+#' **Choosing K-means vs Hierarchical**:
+#' - **K-means**: Faster, suitable for large datasets (n>5000), finds compact clusters;
+#'   nondeterministic (set seed for reproducibility)
+#' - **Hierarchical**: More stable, produces dendrogram for cut-height exploration,
+#'   preserves compositional structure via Ward linkage; slower for large n
+#' - **Recommendation**: Start with K-means; use hierarchical if clusters are continuous
+#'   or if reproducibility is critical
+#'
+#' **Interpreting Silhouette Widths**:
+#' - **Per-observation**: Range -1 to +1; >0.5 is well-clustered; <0 is possibly misclassified
+#' - **Mean silhouette**: Summary quality across all observations
+#'   - Above `strong` threshold (default 0.5): Strong clustering structure
+#'   - Between `moderate` and `strong` (default 0.25-0.5): Moderate structure
+#'   - Below `moderate`: Weak structure; consider merging strata or checking data
+#' - Default thresholds reflect geostatistical best practices but are customizable
+#'
+#' **Troubleshooting**:
+#' - **Poor quality (quality = "weak")**:
+#'   Try the alternative clustering method (`hierarchical` if using K-means, vice versa),
+#'   check for continuous compositional gradients, or increase `n_strata`
+#' - **Too many small strata**:
+#'   Merge strata manually via factor re-assignment or increase `silhouette_thresholds$strong`
+#' - **Non-reproducible clusters**:
+#'   Set `set.seed()` before calling; use `method = "hierarchical"` for deterministic results
+#' - **Performance issues (n>10,000)**:
+#'   Pre-stratify spatially or apply MAF-based dimensionality reduction before stratification
 #'
 #' **Usage in Workflow**:
 #' After detecting non-stationarity via `gc_assess_stationarity()`, use this function
 #' to suggest how to partition the domain. Then apply the modeling workflow independently
-#' to each stratum for improved modeling.
+#' to each stratum for improved modeling. See examples for complete workflow.
+#'
+#' @seealso [gc_assess_stationarity()] for detecting when stratification is needed;
+#'   [gc_ilr_model()] for fitting models to individual strata;
+#'   [gc_define_hierarchy()] for constructing zone hierarchies from strata;
+#'   [gc_fit_hierarchical_model()] for zone-aware hierarchical modeling.
 #'
 #' @examples
 #' \dontrun{
@@ -67,7 +133,15 @@
 gc_identify_strata <- function(data,
                                n_strata = 2,
                                method = "kmeans",
-                               plot = TRUE) {
+                               plot = TRUE,
+                               silhouette_thresholds = list(strong = 0.5, moderate = 0.25)) {
+  if (!is.list(silhouette_thresholds) || !all(c("strong", "moderate") %in% names(silhouette_thresholds))) {
+    stop("silhouette_thresholds must be a list with elements 'strong' and 'moderate'")
+  }
+  if (silhouette_thresholds$strong <= silhouette_thresholds$moderate) {
+    stop("silhouette_thresholds$strong must be greater than silhouette_thresholds$moderate")
+  }
+
   if (methods::is(data, "data.frame")) {
     if (!all(c("x", "y") %in% colnames(data))) {
       stop("data must contain columns 'x' and 'y'")
@@ -94,20 +168,20 @@ gc_identify_strata <- function(data,
 
   if (length(n_strata) > 1) {
     # Auto-select optimal number of strata via silhouette analysis
-    result <- .identify_strata_auto(data_df, ilr_cols, n_strata, method, plot)
+    result <- .identify_strata_auto(data_df, ilr_cols, n_strata, method, plot, silhouette_thresholds)
   } else {
     # Use specified number of strata
     if (method == "kmeans") {
-      result <- .identify_strata_kmeans(data_df, ilr_cols, n_strata, plot)
+      result <- .identify_strata_kmeans(data_df, ilr_cols, n_strata, plot, silhouette_thresholds)
     } else {
-      result <- .identify_strata_hierarchical(data_df, ilr_cols, n_strata, plot)
+      result <- .identify_strata_hierarchical(data_df, ilr_cols, n_strata, plot, silhouette_thresholds)
     }
   }
 
   return(result)
 }
 
-.identify_strata_kmeans <- function(data_df, ilr_cols, n_strata, plot) {
+.identify_strata_kmeans <- function(data_df, ilr_cols, n_strata, plot, silhouette_thresholds) {
   ilr_matrix <- as.matrix(data_df[, ilr_cols])
 
   # PCA on ILR values
@@ -122,9 +196,9 @@ gc_identify_strata <- function(data,
   sil_widths <- sil[, "sil_width"]
 
   mean_sil <- mean(sil_widths)
-  quality <- if (mean_sil > 0.5) {
+  quality <- if (mean_sil > silhouette_thresholds$strong) {
     "strong"
-  } else if (mean_sil > 0.25) {
+  } else if (mean_sil > silhouette_thresholds$moderate) {
     "moderate"
   } else {
     "weak"
@@ -179,7 +253,7 @@ gc_identify_strata <- function(data,
     Stratum = 1:n_strata,
     N_Observations = as.numeric(table(km_result$cluster)),
     Mean_Silhouette = by(sil_widths, km_result$cluster, mean),
-    Quality = ifelse(by(sil_widths, km_result$cluster, mean) > 0.5, "Good", "Fair")
+    Quality = ifelse(by(sil_widths, km_result$cluster, mean) > silhouette_thresholds$strong, "Good", "Fair")
   )
   rownames(summary_df) <- NULL
 
@@ -195,7 +269,7 @@ gc_identify_strata <- function(data,
   )
 }
 
-.identify_strata_hierarchical <- function(data_df, ilr_cols, n_strata, plot) {
+.identify_strata_hierarchical <- function(data_df, ilr_cols, n_strata, plot, silhouette_thresholds) {
   ilr_matrix <- as.matrix(data_df[, ilr_cols])
 
   # PCA on ILR values
@@ -213,9 +287,9 @@ gc_identify_strata <- function(data,
   sil_widths <- sil[, "sil_width"]
 
   mean_sil <- mean(sil_widths)
-  quality <- if (mean_sil > 0.5) {
+  quality <- if (mean_sil > silhouette_thresholds$strong) {
     "strong"
-  } else if (mean_sil > 0.25) {
+  } else if (mean_sil > silhouette_thresholds$moderate) {
     "moderate"
   } else {
     "weak"
@@ -269,7 +343,7 @@ gc_identify_strata <- function(data,
     Stratum = 1:n_strata,
     N_Observations = as.numeric(table(strata_assignment)),
     Mean_Silhouette = by(sil_widths, strata_assignment, mean),
-    Quality = ifelse(by(sil_widths, strata_assignment, mean) > 0.5, "Good", "Fair")
+    Quality = ifelse(by(sil_widths, strata_assignment, mean) > silhouette_thresholds$strong, "Good", "Fair")
   )
   rownames(summary_df) <- NULL
 
@@ -284,7 +358,7 @@ gc_identify_strata <- function(data,
   )
 }
 
-.identify_strata_auto <- function(data_df, ilr_cols, n_strata_candidates, method, plot) {
+.identify_strata_auto <- function(data_df, ilr_cols, n_strata_candidates, method, plot, silhouette_thresholds) {
   ilr_matrix <- as.matrix(data_df[, ilr_cols])
   pca_result <- stats::prcomp(ilr_matrix, scale = TRUE)
   pca_scores <- pca_result$x[, 1:2]
@@ -376,7 +450,7 @@ gc_identify_strata <- function(data,
     Stratum = 1:best_n,
     N_Observations = as.numeric(table(assignment)),
     Mean_Silhouette = by(sil_widths, assignment, mean),
-    Quality = ifelse(by(sil_widths, assignment, mean) > 0.5, "Good", "Fair")
+    Quality = ifelse(by(sil_widths, assignment, mean) > silhouette_thresholds$strong, "Good", "Fair")
   )
   rownames(summary_df) <- NULL
 

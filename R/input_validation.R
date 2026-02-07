@@ -30,6 +30,19 @@ NULL
 #' @param check_outliers Logical, detect statistical outliers using IQR method
 #'   (default TRUE)
 #' @param verbose Logical, print detailed messages (default TRUE)
+#' @param outlier_iqr_multiplier Numeric, IQR multiplier for outlier detection
+#'   (default 1.5, standard Tukey fences). Larger values flag fewer outliers.
+#' @param missing_value_threshold Numeric proportion [0, 1], flagging threshold
+#'   for missing values per component (default 0.1, i.e., 10% missing triggers recommendation).
+#'   Set to NULL to disable missing value recommendations.
+#' @param sum_error_proportion_threshold Numeric proportion [0, 1], if composition
+#'   sum violations exceed this, treated as "error" rather than "warning" (default 0.2).
+#' @param clustering_threshold Numeric [0, 1], relative distance ratio flagging
+#'   points clustered abnormally close (default 0.01 = 1% of median distance).
+#' @param min_sample_size Integer, warn if sample size falls below this threshold
+#'   (default 50, geostatistical stability consideration).
+#' @param outlier_review_threshold Numeric proportion [0, 1], recommend review if
+#'   outlier proportion exceeds this (default 0.05 = 5%).
 #'
 #' @return A list with elements:
 #'   - `valid`: Logical, whether data passes all checks
@@ -99,7 +112,13 @@ gc_validate_input_data <- function(data,
                                     sum_tolerance = 1,
                                     check_spatial = TRUE,
                                     check_outliers = TRUE,
-                                    verbose = TRUE) {
+                                    verbose = TRUE,
+                                    outlier_iqr_multiplier = 1.5,
+                                    missing_value_threshold = 0.1,
+                                    sum_error_proportion_threshold = 0.2,
+                                    clustering_threshold = 0.01,
+                                    min_sample_size = 50,
+                                    outlier_review_threshold = 0.05) {
   
   # Initialize tracking structures
   issues <- list()
@@ -198,7 +217,7 @@ gc_validate_input_data <- function(data,
     ))
   }
   
-  if (verbose) cat("  ✓ Structure checks complete\n")
+  if (verbose) cat("  [OK] Structure checks complete\n")
   
   # =========================================================================
   # STEP 2: Check for missing values
@@ -217,7 +236,7 @@ gc_validate_input_data <- function(data,
         message = paste0(comp, " has ", n_na, " missing values"),
         n_rows = n_na
       )
-      if (n_na / n_obs > 0.1) {
+      if (!is.null(missing_value_threshold) && n_na / n_obs > missing_value_threshold) {
         recommendations <- c(recommendations,
           paste("Consider imputing or removing rows with missing", comp))
       }
@@ -249,7 +268,7 @@ gc_validate_input_data <- function(data,
     }
   }
   
-  if (verbose) cat("  ✓ Missing value checks complete\n")
+  if (verbose) cat("  [OK] Missing value checks complete\n")
   
   # =========================================================================
   # STEP 3: Check compositional integrity
@@ -264,7 +283,7 @@ gc_validate_input_data <- function(data,
       message = "No component columns found",
       n_rows = 0
     )
-    if (verbose) cat("  ✓ Compositional integrity checks complete (no components)\n")
+    if (verbose) cat("  [OK] Compositional integrity checks complete (no components)\n")
   } else {
     comp_data <- data_df[, existing_components, drop = FALSE]
     
@@ -276,7 +295,7 @@ gc_validate_input_data <- function(data,
     n_invalid_sums <- sum(invalid_sums, na.rm = TRUE)
     
     if (n_invalid_sums > 0) {
-      severity <- if (n_invalid_sums / n_obs > 0.2) "error" else "warning"
+      severity <- if (n_invalid_sums / n_obs > sum_error_proportion_threshold) "error" else "warning"
       issues$comp_001 <- list(
         severity = severity,
         message = paste0(
@@ -330,7 +349,7 @@ gc_validate_input_data <- function(data,
       )
     }
     
-    if (verbose) cat("  ✓ Compositional integrity checks complete\n")
+    if (verbose) cat("  [OK] Compositional integrity checks complete\n")
   }
   
   # =========================================================================
@@ -405,7 +424,7 @@ gc_validate_input_data <- function(data,
           min_dist <- min(distances, na.rm = TRUE)
           med_dist <- stats::median(distances, na.rm = TRUE)
           
-          if (min_dist < 0.01 * med_dist) {
+          if (min_dist < clustering_threshold * med_dist) {
             issues$spatial_004 <- list(
               severity = "note",
               message = "Some observations very close together relative to median spacing",
@@ -416,7 +435,7 @@ gc_validate_input_data <- function(data,
       }
     }
     
-    if (verbose) cat("  ✓ Spatial property checks complete\n")
+    if (verbose) cat("  [OK] Spatial property checks complete\n")
   }
   
   # =========================================================================
@@ -428,7 +447,7 @@ gc_validate_input_data <- function(data,
     
     if (length(existing_components) == 0) {
       # Skip if no components
-      if (verbose) cat("  ✓ Outlier checks skipped (no components)\n")
+      if (verbose) cat("  [OK] Outlier checks skipped (no components)\n")
     } else {
       comp_data <- data_df[, existing_components, drop = FALSE]
       
@@ -442,8 +461,8 @@ gc_validate_input_data <- function(data,
           q3 <- stats::quantile(comp_vals, 0.75)
           iqr <- q3 - q1
           
-          lower_fence <- q1 - 1.5 * iqr
-          upper_fence <- q3 + 1.5 * iqr
+          lower_fence <- q1 - outlier_iqr_multiplier * iqr
+          upper_fence <- q3 + outlier_iqr_multiplier * iqr
           
           n_outliers <- sum(comp_vals < lower_fence | comp_vals > upper_fence)
           
@@ -454,7 +473,7 @@ gc_validate_input_data <- function(data,
               n_rows = n_outliers
             )
             
-            if (n_outliers / nrow(comp_data) > 0.05) {
+            if (n_outliers / nrow(comp_data) > outlier_review_threshold) {
               recommendations <- c(recommendations,
                 paste("Review and potentially remove extreme", comp, "values"))
             }
@@ -462,7 +481,7 @@ gc_validate_input_data <- function(data,
         }
       }
       
-      if (verbose) cat("  ✓ Outlier checks complete\n")
+      if (verbose) cat("  [OK] Outlier checks complete\n")
     }
   }
   
@@ -529,10 +548,10 @@ gc_validate_input_data <- function(data,
     ))
   }
   
-  if (nrow(data_df) < 50) {
+  if (nrow(data_df) < min_sample_size) {
     recommendations <- unique(c(
       recommendations,
-      "Sample size < 50: results may be unstable; consider collecting more observations"
+      paste("Sample size <", min_sample_size, ": results may be unstable; consider collecting more observations")
     ))
   }
   

@@ -1,0 +1,298 @@
+---
+title: "Advanced Diagnostics: Model Validation and Uncertainty Quantification"
+author: "geocoda"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Advanced Diagnostics: Model Validation and Uncertainty Quantification}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  dpi = 100
+)
+```
+
+# Advanced Diagnostics & Uncertainty Quantification
+
+After stratifying domains and fitting hierarchical models, comprehensive diagnostics
+ensure model reliability. This vignette synthesizes cross-validation, entropy analysis,
+and bootstrap uncertainty quantification for robust inference.
+
+## Diagnostic Workflow Overview
+
+The complete diagnostic workflow answers five critical questions:
+
+1. **Model Fit**: How well does the hierarchical model predict held-out data?
+2. **Spatial Uncertainty**: Where is compositional variability highest?
+3. **Parameter Stability**: Are estimates robust under resampling?
+4. **Zone Appropriateness**: Are zones meaningfully different?
+5. **Sampling Adequacy**: Where should we collect more data?
+
+## Diagnostic Methods
+
+### Cross-Validation (`gc_cross_validate_per_zone`)
+
+**Purpose**: Assess model predictiveness in each zone independently
+
+**Interpretation**:
+- **Low RMSE**: Zone is well-fitted; predictions reliable
+- **High RMSE**: Zone is underfitted; needs more data or refinement
+- **High variance in RMSE**: Unstable predictions; possible outliers
+
+**Workflow**:
+```r
+cv_results <- gc_cross_validate_per_zone(
+  data = soil_data,
+  zone_vector = zone_assignments,
+  comp_cols = c("SAND", "SILT", "CLAY"),
+  k = 5,  # 5-fold cross-validation
+  verbose = TRUE
+)
+```
+
+**Usage recommendations**:
+- Use k=5-10 for zones with 50+ samples
+- Use LOO (leave-one-out) for small zones (<30 samples)
+- Check for fold-to-fold variability (stability)
+
+### Entropy Analysis (`gc_compute_entropy_per_zone`)
+
+**Purpose**: Identify zones with high compositional uncertainty
+
+**Interpretation**:
+- **Low entropy**: Homogeneous composition (certain)
+- **High entropy**: Diverse composition (uncertain)
+- **Entropy as uncertainty hotspot**: Target for additional sampling
+
+**Workflow**:
+```r
+entropy_results <- gc_compute_entropy_per_zone(
+  ensemble = ensemble,
+  zone_col = "zone_id",
+  method = "shannon",
+  normalize = TRUE,
+  verbose = TRUE
+)
+```
+
+**Why entropy matters**:
+- High entropy zones indicate either:
+  - Natural compositional variability (benign)
+  - Insufficient sampling (needs data)
+  - Undetected sub-domains (consider stratifying further)
+
+### Bootstrap Uncertainty (`gc_bootstrap_uncertainty_per_zone`)
+
+**Purpose**: Assess parameter estimate stability under resampling
+
+**Interpretation**:
+- **Narrow CI**: Parameter well-estimated (stable)
+- **Wide CI**: Parameter poorly-estimated (high uncertainty)
+- **Non-overlapping CIs between zones**: Zones are distinctly different
+
+**Workflow**:
+```r
+bootstrap_results <- gc_bootstrap_uncertainty_per_zone(
+  data = soil_data,
+  zone_vector = zone_assignments,
+  n_bootstrap = 1000,
+  conf_level = 0.95,
+  verbose = TRUE
+)
+```
+
+**Practical guidelines**:
+- Use n_bootstrap = 500-1000 for routine assessment
+- Increase to 2000+ for critical decisions
+- Wide CIs suggest: collect more data OR merge zones
+
+## Integrated Diagnostic Assessment
+
+Combine all three diagnostics into coherent zone confidence scores:
+
+```r
+# Step 1: Compute individual metrics
+cv_results <- gc_cross_validate_per_zone(...)
+entropy_results <- gc_compute_entropy_per_zone(...)
+bootstrap_results <- gc_bootstrap_uncertainty_per_zone(...)
+
+# Step 2: Normalize metrics to [0, 1]
+# (0 = worst, 1 = best)
+normalized_cv <- 1 - (cv_results$mean_rmse / max(cv_results$mean_rmse))
+normalized_entropy <- 1 - (entropy_results$shannon_entropy / max(entropy_results$shannon_entropy))
+normalized_bootstrap <- 1 - (bootstrap_ci_width / max(bootstrap_ci_width))
+
+# Step 3: Compute composite confidence score
+confidence_score <- 0.4 * normalized_cv + 
+                    0.3 * normalized_entropy + 
+                    0.3 * normalized_bootstrap
+
+# Score interpretation:
+# 0.8-1.0: High confidence (use for inference)
+# 0.6-0.8: Moderate confidence (use with caution)
+# <0.6:    Low confidence (collect more data)
+```
+
+## Diagnostic Recommendations by Zone Confidence
+
+### High Confidence (Score 0.8+)
+
+**Actions**:
+- Proceed with ensemble simulation
+- Use ensemble predictions for maps/reports
+- No additional sampling needed
+
+### Moderate Confidence (Score 0.6-0.8)
+
+**Actions**:
+- Collect 5-10 additional profiles
+- Target high-entropy areas
+- Re-run diagnostics after new data
+
+### Low Confidence (Score <0.6)
+
+**Actions**:
+- Significant additional sampling required
+- Consider merging with neighboring zones
+- Revisit zone definitions
+- Increase hierarchy complexity if justified
+
+## Practical Example: Soil Carbon Inventory
+
+### 1. Fit hierarchical model
+
+```r
+hz_fit <- gc_fit_hierarchical_model(
+  data = soil_data,
+  object = hz_definition,
+  verbose = FALSE
+)
+```
+
+### 2. Run cross-validation
+
+```r
+cv_results <- gc_cross_validate_per_zone(
+  data = soil_data,
+  zone_vector = soil_data$zone,
+  comp_cols = c("SAND", "SILT", "CLAY"),
+  k = 5,
+  verbose = TRUE
+)
+```
+
+**Interpretation**: 
+- Upland RMSE = 3.2% (excellent; sufficient data)
+- Lowland RMSE = 7.1% (moderate; could use more data)
+
+### 3. Compute ensemble and entropy
+
+```r
+ensemble <- gc_sim_hierarchical(...)
+entropy_results <- gc_compute_entropy_per_zone(
+  ensemble = ensemble,
+  zone_col = "zone_id"
+)
+```
+
+**Finding**: Lowland zone has high entropy → recommend additional sampling near transition zones
+
+### 4. Bootstrap parameter estimates
+
+```r
+bootstrap_results <- gc_bootstrap_uncertainty_per_zone(
+  data = soil_data,
+  zone_vector = soil_data$zone,
+  n_bootstrap = 1000
+)
+```
+
+**Finding**: Lowland parameters have wide CIs → confirms underfitting
+
+### 5. Decision matrix
+
+```
+Zone     | CV_RMSE | CV_Status | Entropy | Bootstrap_CI | Confidence | Action
+---------|---------|-----------|---------|--------------|-----------|--------
+Upland   | 3.2%    | Excellent | Low     | Narrow       | 0.92      | Use
+Midslope | 4.8%    | Good      | Medium  | Moderate     | 0.78      | Use+Monitor
+Lowland  | 7.1%    | Fair      | High    | Wide         | 0.58      | Collect Data
+```
+
+## Advanced: Depth-Stratified Diagnostics (3D)
+
+For 3D hierarchical models (lateral domains × depth strata), apply diagnostics separately:
+
+```r
+# Separate CV within each depth stratum
+for (depth in c("shallow", "mid", "deep")) {
+  depth_data <- soil_data[soil_data$depth_class == depth, ]
+  cv_depth <- gc_cross_validate_per_zone(
+    data = depth_data,
+    zone_vector = depth_data$zone
+  )
+  print(cv_depth)
+}
+```
+
+**Expected patterns**:
+- Shallow: Usually better fit (more samples, less variable)
+- Mid: Intermediate fit
+- Deep: Often worse fit (fewer samples, less data)
+
+## Best Practices
+
+### 1. Iterative Refinement
+
+1. Fit initial HZM
+2. Run full diagnostics
+3. Adjust zones or collect new data
+4. Refit and re-diagnose
+5. Repeat until confidence targets met
+
+### 2. Documentation
+
+Record:
+- Cross-validation results (k, folds, RMSE by zone)
+- Entropy hotspots (locations, values)
+- Bootstrap results (CIs for key parameters)
+- Decisions made based on diagnostics
+
+### 3. Communicate Uncertainty
+
+When presenting results:
+- Show CI estimates (not just means)
+- Highlight low-confidence zones
+- Explain areas needing more data
+- Use visualizations (boxplots, heatmaps)
+
+### 4. Threshold Setting
+
+Define acceptable thresholds before analysis:
+- CV RMSE < 5% = acceptable
+- Shannon entropy < 0.5 (normalized) = acceptable
+- Bootstrap CI < 30% of mean = acceptable
+
+## References
+
+**Cross-Validation**: Stone (1974), Hastie et al. (2009)
+**Entropy in Uncertainty**: Shannon (1948), Rao (1982)
+**Bootstrap Methods**: Efron & Tibshirani (1993), Chernick (2008)
+
+## Summary
+
+Advanced diagnostics provide:
+
+1. **Quantitative assessment** of model quality
+2. **Zone-specific confidence** enabling targeted sampling
+3. **Data-driven uncertainty** quantification
+4. **Actionable recommendations** for model improvement
+5. **Transparent reporting** of limitations
+
+Use the full diagnostic suite to build trust in hierarchical geostatistical models
+and ensure robust decision support.

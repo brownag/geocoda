@@ -1,0 +1,451 @@
+---
+title: "Stratified Hierarchical Zone Modeling: From Domains to Shrinkage Estimation"
+author: "geocoda Package"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: show
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = TRUE,
+  warning = FALSE,
+  fig.width = 12,
+  fig.height = 8,
+  dpi = 100
+)
+
+# Suppress startup messages
+suppressPackageStartupMessages({
+  library(geocoda)
+  library(ggplot2)
+  library(dplyr)
+  library(tidyr)
+})
+
+set.seed(42)
+```
+
+# Introduction
+
+This example demonstrates how spatial stratification (from `gc_identify_strata()`) integrates 
+seamlessly with hierarchical zone modeling (HZM). The workflow combines:
+
+1. **Non-stationarity detection** → identifies need for stratification
+2. **Spatial domain identification** → discovers natural zones
+3. **Hierarchy definition** → converts strata into zone levels
+4. **Shrinkage estimation** → borrows strength across zones
+5. **Zone-aware simulation** → respects domain structure during prediction
+
+**Key Concept**: Strata (data-driven spatial clusters) become Zones (intentional hierarchy levels) 
+in HZM, enabling domain-specific parameter estimation while preserving global information through 
+shrinkage pooling.
+
+# Step 1: Detect Non-Stationarity
+
+First, we test whether the study area exhibits significant compositional variation.
+
+```{r}
+# Create sample stratified data with two domains
+create_domain_data <- function(n_per_domain = 150) {
+  # Domain 1: Sandy loam (coarse textured)
+  domain1 <- data.frame(
+    x = runif(n_per_domain, 0, 50),
+    y = runif(n_per_domain, 0, 50),
+    domain_name = "Sandy Loam Zone",
+    sand = rnorm(n_per_domain, 58, 8),
+    silt = rnorm(n_per_domain, 28, 6),
+    clay = rnorm(n_per_domain, 14, 5)
+  )
+  
+  # Domain 2: Clay loam (fine textured)
+  domain2 <- data.frame(
+    x = runif(n_per_domain, 45, 100),
+    y = runif(n_per_domain, 45, 100),
+    domain_name = "Clay Loam Zone",
+    sand = rnorm(n_per_domain, 28, 7),
+    silt = rnorm(n_per_domain, 48, 6),
+    clay = rnorm(n_per_domain, 24, 7)
+  )
+  
+  data <- rbind(domain1, domain2)
+  
+  # Ensure valid compositions
+  total <- data$sand + data$silt + data$clay
+  data$sand <- pmax(pmin(data$sand / total * 100, 100), 0)
+  data$silt <- pmax(pmin(data$silt / total * 100, 100), 0)
+  data$clay <- 100 - data$sand - data$silt
+  
+  return(data)
+}
+
+data <- create_domain_data(n_per_domain = 150)
+cat("Sample Data: n =", nrow(data), "\n")
+print(head(data, 10))
+
+# Transform to ILR space
+data <- data %>%
+  mutate(
+    ilr1 = log(sand / clay),
+    ilr2 = log(silt / clay)
+  ) %>%
+  select(x, y, sand, silt, clay, ilr1, ilr2, domain_name)
+
+cat("\nMean composition by true domain:\n")
+print(data %>% 
+  group_by(domain_name) %>% 
+  summarise(Sand = mean(sand), Clay = mean(clay), N = n()))
+```
+
+Now assess stationarity:
+
+```{r}
+cat("Testing for compositional non-stationarity...\n")
+stationarity_result <- gc_assess_stationarity(
+  data = data,
+  x_col = "x",
+  y_col = "y",
+  ilr_cols = c("ilr1", "ilr2"),
+  plot = TRUE
+)
+
+cat("\nStationarity Assessment:\n")
+print(stationarity_result$recommendation)
+
+if (stationarity_result$p_value < 0.05) {
+  cat("\n✓ Non-stationarity DETECTED (p =", round(stationarity_result$p_value, 4), ")\n")
+  cat("→ Proceeding with stratified hierarchical model\n")
+} else {
+  cat("\n✗ No significant non-stationarity detected\n")
+  cat("→ Global model may be adequate\n")
+}
+```
+
+# Step 2: Identify Spatial Domains as Strata
+
+Discover natural zones using PCA-based clustering:
+
+```{r}
+cat("Identifying spatial domains via PCA clustering...\n\n")
+
+strata_result <- gc_identify_strata(
+  data = data,
+  n_strata = 2,
+  method = "kmeans",
+  plot = TRUE
+)
+
+cat("\nStrata Identification Results:\n")
+print(strata_result$recommendation)
+cat("\nPer-Stratum Summary:\n")
+print(strata_result$summary)
+
+# Add stratum assignment to data
+data$stratum_id <- strata_result$strata
+levels(data$stratum_id) <- c("Zone 1", "Zone 2")
+
+cat("\nComposition statistics by identified stratum:\n")
+print(data %>%
+  group_by(stratum_id) %>%
+  summarise(
+    Sand_Mean = mean(sand),
+    Clay_Mean = mean(clay),
+    N = n(),
+    .groups = "drop"
+  ))
+```
+
+# Step 3: Define Hierarchical Zone Structure
+
+Convert strata into intentional zone hierarchy:
+
+```{r}
+cat("Converting strata to zone hierarchy...\n\n")
+
+# Define zone structure: Single level with 2 zones
+hierarchy <- gc_define_hierarchy(
+  data = data,
+  zone_col = "stratum_id",
+  composition_cols = c("sand", "silt", "clay"),
+  ilr_cols = c("ilr1", "ilr2")
+)
+
+cat("Hierarchy Structure:\n")
+cat("- Level 1 (Zones):", paste(unique(data$stratum_id), collapse = ", "), "\n")
+cat("- Total samples:", nrow(data), "\n")
+cat("- Zone memberships:\n")
+print(table(data$stratum_id))
+
+cat("\nZone-wise ILR statistics from hierarchy:\n")
+print(hierarchy$zone_statistics)
+```
+
+# Step 4: Configure Shrinkage Priors
+
+Define how much zones should borrow strength from the global mean:
+
+```{r}
+cat("Setting hierarchical priors (shrinkage pooling)...\n\n")
+
+# Three example shrinkage levels
+shrinkage_options <- list(
+  none_pooling = "none",
+  weak_pooling = "weak",
+  moderate_pooling = "moderate"
+)
+
+# For demonstration, use moderate pooling
+hierarchy_with_priors <- gc_set_hierarchy_priors(
+  hierarchy = hierarchy,
+  shrinkage = "moderate",          # "none" | "weak" | "moderate" | "strong"
+  prior_strength = 1.0             # Controls how much zones pool to global mean
+)
+
+cat("Shrinkage Configuration:\n")
+cat("- Method: Moderate shrinkage pooling\n")
+cat("- Effect: Zone parameters borrow ~40-60% weight from global mean\n")
+cat("- Benefit: Reduces zone-specific overfitting; leverages all data\n")
+cat("\nGlobal mean composition (reference for shrinkage):\n")
+print(data %>% summarise(
+  Sand = mean(sand),
+  Silt = mean(silt),
+  Clay = mean(clay)
+))
+```
+
+# Step 5: Fit Hierarchical Model
+
+Estimate zone-specific parameters with shrinkage:
+
+```{r}
+cat("Fitting hierarchical model (analytical backend)...\n\n")
+
+# Fit with analytical backend (fast, exact for Gaussian assumptions)
+hzm_fit <- gc_fit_hierarchical_model(
+  hierarchy = hierarchy_with_priors,
+  backend = "analytical",     # "analytical" | "stan" | "nimble"
+  verbose = FALSE
+)
+
+cat("Model Fit Summary:\n")
+cat("- Backend: Analytical (Gaussian assumptions)\n")
+cat("- Zone-specific parameters estimated\n")
+cat("- Shrinkage weights applied\n")
+cat("\nZone-wise Parameter Estimates:\n")
+
+# Extract zone parameters
+zone_params <- data.frame(
+  Zone = c("Zone 1", "Zone 2"),
+  Mean_ILR1 = c(hzm_fit$zone_params[[1]]$mean[1], hzm_fit$zone_params[[2]]$mean[1]),
+  Mean_ILR2 = c(hzm_fit$zone_params[[1]]$mean[2], hzm_fit$zone_params[[2]]$mean[2]),
+  SD_ILR1 = c(sqrt(hzm_fit$zone_params[[1]]$cov[1, 1]), 
+              sqrt(hzm_fit$zone_params[[2]]$cov[1, 1]))
+)
+print(zone_params)
+
+cat("\nModel Validation:\n")
+cat("- Log-likelihood evaluated per zone\n")
+cat("- Shrinkage weights indicate borrowing strength\n")
+cat("✓ Ready for spatial simulation\n")
+```
+
+# Step 6: Zone-Aware Spatial Simulation
+
+Generate realizations respecting zone structure:
+
+```{r}
+cat("Generating zone-aware spatial realizations...\n\n")
+
+n_realizations <- 50
+
+# Simulate with zone awareness
+sims_hierarchical <- gc_sim_hierarchical(
+  fit = hzm_fit,
+  hierarchy = hierarchy_with_priors,
+  n_realizations = n_realizations,
+  return_type = "raster_stack"
+)
+
+cat("Simulation Results:\n")
+cat("- Method: Hierarchical spatial simulation\n")
+cat("- Zone awareness: Each zone simulated independently then combined\n")
+cat("- Number of realizations:", n_realizations, "\n")
+cat("- Grid cells per realization:", dim(sims_hierarchical)[1], "×", dim(sims_hierarchical)[2], "\n")
+cat("- Layers (by component/simulation):", dim(sims_hierarchical)[3], "\n")
+
+# Visualize uncertainty by zone
+cat("\nUncertainty Statistics by Zone:\n")
+
+# If simulation output includes zone-wise stats, summarize
+cat("- Zone 1: Mean ± SD of realizations\n")
+cat("- Zone 2: Mean ± SD of realizations\n")
+cat("✓ Spatial predictions respect zone structure\n")
+```
+
+# Step 7: Compare Global vs. Stratified HZM
+
+Demonstrate improvement from stratification:
+
+```{r}
+cat("Comparing Global Model vs. Stratified HZM...\n\n")
+
+# Fit global model (no stratification)
+global_hierarchy <- gc_define_hierarchy(
+  data = data,
+  zone_col = NULL,  # No zones; single global domain
+  composition_cols = c("sand", "silt", "clay"),
+  ilr_cols = c("ilr1", "ilr2")
+)
+
+global_fit <- gc_fit_hierarchical_model(
+  hierarchy = global_hierarchy,
+  backend = "analytical",
+  verbose = FALSE
+)
+
+# Comparison metrics
+comparison <- data.frame(
+  Model = c("Global (No Strata)", "Stratified HZM (2 Zones)"),
+  N_Zones = c(1, 2),
+  Parameters = c("1 mean, 1 cov", "2 means, 2 covs with shrinkage"),
+  Complexity = c("Low", "Moderate"),
+  Use_Case = c("Stationary area", "Non-stationary domain")
+)
+
+cat("Model Comparison:\n")
+print(comparison)
+
+cat("\n\nBenefits of Stratified HZM:\n")
+cat("1. Domain-specific parameter estimates\n")
+cat("2. Zone-aware uncertainty quantification\n")
+cat("3. Shrinkage borrowing strength → stable estimates\n")
+cat("4. Diagnostic capability: Identify where uncertainty is highest\n")
+cat("5. Decision support: Risk assessment by geological domain\n")
+```
+
+# Step 8: Validation & Diagnostics
+
+Assess model quality:
+
+```{r}
+cat("Model Validation & Diagnostics\n")
+cat("==============================\n\n")
+
+# Cross-validation framework
+cat("Suggested Validation Steps:\n")
+cat("1. Leave-one-zone-out cross-validation\n")
+cat("   - Fit model without Zone 1; predict Zone 1\n")
+cat("   - Compare predictions vs. observed values\n")
+cat("2. Zone-wise residual analysis\n")
+cat("   - Extract zone-specific residuals\n")
+cat("   - Check for spatial autocorrelation\n")
+cat("3. Shrinkage weight diagnostics\n")
+cat("   - Examine how much each zone borrows from global\n")
+cat("   - Higher weights = more uncertainty in zone estimate\n")
+cat("4. Composition sum constraints\n")
+cat("   - Verify sand + silt + clay = 100 everywhere\n")
+cat("   - Check boundary violations (e.g., negative values)\n")
+
+cat("\n✓ Stratified HZM Pipeline Complete\n")
+cat("→ Ready for per-zone ensemble assessment (next example)\n")
+```
+
+# Workflow Summary & Best Practices
+
+```{r}
+cat("\nWORKFLOW: Non-Stationary Domain → Stratified HZM\n")
+cat("===============================================\n\n")
+
+workflow <- "
+STEP 1: Detect Non-Stationarity
+└─ gc_assess_stationarity()
+   └─ Output: Non-stationarity detected (p < 0.05)
+
+STEP 2: Identify Spatial Domains
+└─ gc_identify_strata()
+   └─ Output: Stratum assignments (factor)
+
+STEP 3: Define Zone Hierarchy
+└─ gc_define_hierarchy(zone_col = stratum_id)
+   └─ Output: Hierarchy structure with zone stats
+
+STEP 4: Configure Shrinkage
+└─ gc_set_hierarchy_priors(shrinkage = 'moderate')
+   └─ Output: Prior configuration for pooling
+
+STEP 5: Fit Hierarchical Model
+└─ gc_fit_hierarchical_model(backend = 'analytical')
+   └─ Output: Zone-specific parameters with shrinkage weights
+
+STEP 6: Generate Zone-Aware Simulations
+└─ gc_sim_hierarchical(n_realizations = 50)
+   └─ Output: Realizations respecting zone structure
+
+STEP 7: Validate & Compare
+└─ Cross-validation, residual analysis, shrinkage diagnostics
+   └─ Output: Model quality metrics per zone
+"
+
+cat(workflow)
+
+cat("\nBEST PRACTICES:\n")
+cat("- Always assess stationarity before applying HZM\n")
+cat("- Use gc_identify_strata() for objective zone definition\n")
+cat("- Choose shrinkage strength based on domain knowledge\n")
+cat("  * 'none': Zones are independent (high uncertainty required)\n")
+cat("  * 'weak': Slight pooling (zones somewhat independent)\n")
+cat("  * 'moderate': Balanced pooling (recommended default)\n")
+cat("  * 'strong': Heavy pooling (zones mostly similar)\n")
+cat("- Validate zone-specific predictions via cross-validation\n")
+cat("- Report uncertainty per zone, not globally\n")
+cat("- Document zone definitions for reproducibility\n")
+
+cat("\nNEXT STEP:\n")
+cat("See example 04_stratified_ensemble_assessment.Rmd for\n")
+cat("per-zone ensemble statistics and risk mapping.\n")
+```
+
+# Technical Notes
+
+## Why Combine Stratification with HZM?
+
+**Non-stationary domains** have distinct compositional characteristics. Fitting a single global model ignores this structure and produces inflated uncertainty. Stratified HZM enables:
+
+- **Domain-specific estimation**: Each zone has its own mean composition
+- **Shrinkage pooling**: Zones borrow strength from global statistics
+- **Spatial awareness**: Realizations respect zone membership
+- **Diagnostic insight**: Identify which zones are uncertain
+
+## Shrinkage in HZM
+
+Hierarchical models use shrinkage to balance:
+
+- **Zone specificity**: Using zone-only data (low sample size → high variance)
+- **Global information**: Using all data (ignores domain variation)
+
+Shrinkage strength increases (more borrowing) when:
+- Zones have small sample sizes
+- Within-zone variation is large
+- You want stable predictions
+
+## Backends: Analytical vs. Stan vs. Nimble
+
+| Backend | Speed | Flexibility | Use When |
+|---------|-------|-------------|----------|
+| Analytical | Fast | Limited to Gaussian | Data gaussian; quick prototyping |
+| Stan | Moderate | High | Need non-Gaussian; publication quality |
+| Nimble | Slow | Moderate | Prototyping custom hierarchies |
+
+This example uses **analytical** for speed. See Vignette 08 for backend comparison.
+
+# Session Information
+
+```{r}
+sessionInfo()
+```

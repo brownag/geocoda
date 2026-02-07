@@ -54,12 +54,17 @@ get_backend_install_msg <- function(backend) {
 #' Dispatcher for hierarchical model fitting
 #'
 #' Route to appropriate backend (analytical, Stan, or Nimble) for fitting.
+#' Supports both standard and 3D spatial variants.
 #'
 #' @param data Data frame with columns: zone (factor), ilr1, ilr2, ... (ILR values)
 #' @param prior_spec An object of class `"gc_prior_spec"`
-#' @param backend Character, backend selection: "analytical" (default), "stan", or "nimble"
+#' @param backend Character, backend selection: "analytical" (default), "stan", "nimble",
+#'   "analytical_3d" (spatial decay), "stan_3d" (CAR prior), or "nimble_3d" (intrinsic CAR)
 #' @param verbose Logical, print progress (default TRUE)
 #' @param ... Additional arguments passed to backend-specific functions
+#'   - For analytical_3d: zone_centers, spatial_decay, decay_power, decay_range
+#'   - For stan_3d: car_prior_scale, estimate_spatial_decay
+#'   - For nimble_3d: prior_spatial_scale
 #'
 #' @return An S3 object of class `"gc_hierarchical_fit"` with standardized structure:
 #'   - `zone_estimates`: Zone-specific posterior parameters
@@ -77,22 +82,38 @@ fit_hierarchical_backend <- function(data,
                                     ...) {
 
   # Validate backend argument
-  backend <- match.arg(backend, c("analytical", "stan", "nimble"))
+  backend <- match.arg(backend, c(
+    "analytical", "stan", "nimble",
+    "analytical_3d", "stan_3d", "nimble_3d"
+  ))
 
-  # Check backend availability
-  if (!check_backend_available(backend)) {
-    stop(
-      "Backend '", backend, "' is not available.\n",
-      get_backend_install_msg(backend),
-      call. = FALSE
-    )
+  # Check backend availability (skip for analytical backends)
+  if (backend %in% c("stan", "stan_3d")) {
+    if (!check_backend_available("stan")) {
+      stop(
+        "Backend 'stan' is not available.\n",
+        get_backend_install_msg("stan"),
+        call. = FALSE
+      )
+    }
+  } else if (backend %in% c("nimble", "nimble_3d")) {
+    if (!check_backend_available("nimble")) {
+      stop(
+        "Backend 'nimble' is not available.\n",
+        get_backend_install_msg("nimble"),
+        call. = FALSE
+      )
+    }
   }
 
   # Dispatch to appropriate backend
   switch(backend,
     "analytical" = fit_hierarchical_analytical(data, prior_spec, verbose = verbose),
+    "analytical_3d" = fit_hierarchical_analytical_3d_weighted(data, prior_spec, verbose = verbose, ...),
     "stan" = fit_hierarchical_stan(data, prior_spec, verbose = verbose, ...),
-    "nimble" = fit_hierarchical_nimble(data, prior_spec, verbose = verbose, ...)
+    "stan_3d" = fit_hierarchical_stan_3d(data, prior_spec, verbose = verbose, ...),
+    "nimble" = fit_hierarchical_nimble(data, prior_spec, verbose = verbose, ...),
+    "nimble_3d" = fit_hierarchical_nimble_3d(data, prior_spec, verbose = verbose, ...)
   )
 }
 
@@ -516,6 +537,286 @@ fit_hierarchical_stan <- function(data,
   }
 
   fit_obj
+}
+
+
+#' Nimble MCMC backend
+#'
+#' Fit hierarchical model using Nimble with adaptive MCMC samplers.
+#' Provides flexible Bayesian inference with configurable samplers.
+#'
+#' @param data Data frame with columns: zone (factor), ilr1, ilr2, ... (ILR values)
+#' @param prior_spec An object of class `"gc_prior_spec"`
+#' @param n_iter Integer, number of iterations per chain (default 2000)
+#' @param n_warmup Integer, warmup/burn-in iterations (default 500)
+#' @param n_chains Integer, number of chains (default 2)
+#' @param estimate_pooling Logical, estimate pooling strength from data? (default FALSE)
+#' @param covariance_prior Character, prior for covariances: "lkj" (default) or "inverse_wishart"
+#' @param verbose Logical, print progress (default TRUE)
+#' @param ... Additional arguments (reserved for future use)
+#'
+#' @return S3 object of class `"gc_hierarchical_fit"` with Nimble MCMC results
+#'
+#' @keywords internal
+#' Distance-Weighted Analytical Backend for 3D Spatial Hierarchical Models
+#'
+#' Extend analytical shrinkage with spatial decay of pooling strength
+#' based on zone centroid distances. Provides fast 3D+HZM integration using
+#' inverse distance weighting.
+#'
+#' @param data Data frame with columns: zone (factor), ilr1, ilr2, ... (ILR values),
+#'   optionally x, y, z for 3D coordinates
+#' @param prior_spec An object of class `"gc_prior_spec"`
+#' @param zone_centers Optional data frame with columns: zone (matching data$zone),
+#'   x, y, z (zone centroid coordinates). If NULL, computed from data coordinates.
+#' @param spatial_decay Character, decay function: "inverse_distance" (default) or "exponential"
+#' @param decay_power Numeric, power parameter for inverse distance (default 2.0)
+#' @param decay_range Numeric, characteristic range for exponential decay (default NULL,
+#'   computed as mean distance between zones)
+#' @param verbose Logical, print progress (default TRUE)
+#'
+#' @return S3 object of class `"gc_hierarchical_fit"` with spatial analytical results
+#'
+#' @keywords internal
+fit_hierarchical_analytical_3d_weighted <- function(data,
+                                                    prior_spec,
+                                                    zone_centers = NULL,
+                                                    spatial_decay = "inverse_distance",
+                                                    decay_power = 2.0,
+                                                    decay_range = NULL,
+                                                    verbose = TRUE) {
+
+  if (!inherits(prior_spec, "gc_prior_spec")) {
+    stop("prior_spec must be an object of class 'gc_prior_spec'")
+  }
+
+  if (!("zone" %in% names(data))) {
+    stop("data must contain a 'zone' column")
+  }
+
+  hierarchy <- prior_spec$hierarchy
+  ilr_cols <- grep("^ilr", names(data), value = TRUE)
+
+  if (length(ilr_cols) == 0) {
+    stop("data must contain ILR columns (ilr1, ilr2, ...)")
+  }
+
+  if (length(ilr_cols) != hierarchy$n_components - 1) {
+    stop("Number of ILR columns does not match n_components - 1")
+  }
+
+  spatial_decay <- match.arg(spatial_decay, c("inverse_distance", "exponential"))
+
+  if (verbose) {
+    cat("Fitting Hierarchical Shrinkage Model with 3D Spatial Weighting\n")
+    cat("  Observations:", nrow(data), "\n")
+    cat("  Zones:", hierarchy$n_zones, "\n")
+    cat("  ILR dimensions:", length(ilr_cols), "\n")
+    cat("  Method: Analytical shrinkage (empirical Bayes) with spatial decay\n")
+    cat("  Spatial decay function:", spatial_decay, "\n")
+  }
+
+  # Extract ILR columns and zone factor
+  zone_factor <- as.factor(data$zone)
+  y_matrix <- as.matrix(data[, ilr_cols, drop = FALSE])
+
+  # Get or compute zone centers
+  has_3d_coords <- all(c("x", "y", "z") %in% names(data))
+
+  if (is.null(zone_centers)) {
+    if (!has_3d_coords) {
+      stop(
+        "zone_centers must be provided if data does not contain x, y, z coordinates.\n",
+        "Provide a data frame with zone centroid coordinates."
+      )
+    }
+
+    # Compute zone centers from data coordinates
+    zone_centers <- data.frame(zone = unique(zone_factor))
+    zone_centers$x <- sapply(zone_centers$zone, function(z) {
+      mean(data$x[zone_factor == z], na.rm = TRUE)
+    })
+    zone_centers$y <- sapply(zone_centers$zone, function(z) {
+      mean(data$y[zone_factor == z], na.rm = TRUE)
+    })
+    zone_centers$z <- sapply(zone_centers$zone, function(z) {
+      mean(data$z[zone_factor == z], na.rm = TRUE)
+    })
+  } else {
+    # Validate provided zone_centers
+    if (!all(c("zone", "x", "y", "z") %in% names(zone_centers))) {
+      stop("zone_centers must have columns: zone, x, y, z")
+    }
+  }
+
+  # Compute pairwise distances between zone centers
+  zone_coords <- zone_centers[, c("x", "y", "z"), drop = FALSE]
+  zone_dists <- as.matrix(stats::dist(zone_coords))
+  zone_names <- zone_centers$zone
+
+  # Compute spatial decay weights
+  if (spatial_decay == "inverse_distance") {
+    # Inverse distance weighting: w[i,j] = 1 / (distance[i,j]^p)
+    decay_weights <- zone_dists^decay_power
+    decay_weights[decay_weights == 0] <- NA  # Exclude self-distances
+    decay_weights <- 1 / decay_weights
+  } else if (spatial_decay == "exponential") {
+    # Exponential decay: w[i,j] = exp(-distance[i,j] / range)
+    if (is.null(decay_range)) {
+      # Compute characteristic range as mean distance between zones
+      upper_tri <- upper.tri(zone_dists)
+      decay_range <- mean(zone_dists[upper_tri], na.rm = TRUE)
+    }
+    decay_weights <- exp(-zone_dists / decay_range)
+    diag(decay_weights) <- NA  # Exclude self-distances
+  }
+
+  # Initialize results
+  zone_summaries <- list()
+  posterior_draws <- list()
+  spatial_pooling_strengths <- data.frame()
+
+  # Fit zone models with spatially-weighted pooling
+  for (z in seq_along(zone_names)) {
+    zone_name <- zone_names[z]
+    zone_idx <- zone_factor == zone_name
+
+    if (sum(zone_idx) == 0) {
+      if (verbose) {
+        cat("Warning: Zone", zone_name, "has no observations\n")
+      }
+      next
+    }
+
+    y_zone <- y_matrix[zone_idx, , drop = FALSE]
+    n_z <- nrow(y_zone)
+
+    # Compute zone posterior
+    zone_mean <- colMeans(y_zone, na.rm = TRUE)
+    zone_cov <- stats::cov(y_zone, use = "complete.obs")
+
+    # Compute spatial weights from neighboring zones
+    neighbor_weights <- decay_weights[z, -z]  # Weights to other zones
+    neighbor_idx <- seq_along(zone_names)[-z]
+
+    if (any(!is.na(neighbor_weights)) && sum(!is.na(neighbor_weights)) > 0) {
+      # Normalize weights
+      neighbor_weights <- neighbor_weights / sum(neighbor_weights, na.rm = TRUE)
+
+      # Spatial pooling: weighted average of global mean and neighboring zone means
+      # Base shrinkage + spatial influence from neighbors
+      base_shrinkage <- prior_spec$pooling_coefficient
+      spatial_influence <- 0.0
+
+      for (i in seq_along(neighbor_idx)) {
+        neighbor_z <- neighbor_idx[i]
+        neighbor_name <- zone_names[neighbor_z]
+        neighbor_idx_mask <- zone_factor == neighbor_name
+
+        if (sum(neighbor_idx_mask) > 0) {
+          neighbor_y <- y_matrix[neighbor_idx_mask, , drop = FALSE]
+          neighbor_mean <- colMeans(neighbor_y, na.rm = TRUE)
+          w <- ifelse(is.na(neighbor_weights[i]), 0, neighbor_weights[i])
+          spatial_influence <- spatial_influence + w * neighbor_mean
+        }
+      }
+
+      # Combine global pooling with spatial pooling
+      effective_pooling <- (1 - base_shrinkage) * zone_mean +
+        base_shrinkage * 0.5 * prior_spec$global_mean +
+        base_shrinkage * 0.5 * spatial_influence
+
+      pooled_mean <- effective_pooling
+      effective_shrinkage <- base_shrinkage + (1 - base_shrinkage) * sum(!is.na(neighbor_weights)) / (length(zone_names) - 1)
+    } else {
+      # No valid neighbors - use standard shrinkage
+      pooled_mean <- (1 - prior_spec$pooling_coefficient) * zone_mean +
+        prior_spec$pooling_coefficient * prior_spec$global_mean
+      effective_shrinkage <- prior_spec$pooling_coefficient
+    }
+
+    # Posterior variance
+    posterior_var_scaling <- 1.0 / (1.0 + n_z * effective_shrinkage)
+    pooled_cov <- posterior_var_scaling * zone_cov
+
+    # Store posterior
+    posterior_draws[[zone_name]] <- list(
+      n_obs = n_z,
+      mean = pooled_mean,
+      cov = pooled_cov,
+      sd = sqrt(diag(pooled_cov))
+    )
+
+    # Credible intervals
+    ci_lower <- pooled_mean - 1.96 * sqrt(diag(pooled_cov))
+    ci_upper <- pooled_mean + 1.96 * sqrt(diag(pooled_cov))
+
+    zone_summaries[[zone_name]] <- data.frame(
+      zone = zone_name,
+      ilr_dim = ilr_cols,
+      posterior_mean = pooled_mean,
+      posterior_sd = sqrt(diag(pooled_cov)),
+      ci_lower = ci_lower,
+      ci_upper = ci_upper,
+      n_obs = n_z,
+      shrinkage = effective_shrinkage,
+      stringsAsFactors = FALSE
+    )
+
+    spatial_pooling_strengths <- rbind(spatial_pooling_strengths, data.frame(
+      zone = zone_name,
+      n_obs = n_z,
+      shrinkage_strength = effective_shrinkage,
+      n_neighbors = sum(!is.na(neighbor_weights)),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  zone_summaries_df <- do.call(rbind, zone_summaries)
+  rownames(zone_summaries_df) <- NULL
+
+  # Build return object
+  fit <- list(
+    zone_estimates = posterior_draws,
+    global_estimates = list(
+      mean = prior_spec$global_mean,
+      cov = prior_spec$global_covariance
+    ),
+    samples = NULL,
+    shrinkage_weights = spatial_pooling_strengths,
+    zone_summaries = zone_summaries_df,
+    zone_centers = zone_centers,
+    diagnostics = list(
+      method = "analytical_shrinkage_3d_weighted",
+      backend = "analytical_3d",
+      convergence = "analytical (no convergence metrics)",
+      spatial_decay = spatial_decay,
+      decay_power = if (spatial_decay == "inverse_distance") decay_power else NA,
+      decay_range = if (spatial_decay == "exponential") decay_range else NA
+    ),
+    prior_spec = prior_spec,
+    metadata = list(
+      method = "analytical_shrinkage_3d_weighted",
+      backend = "analytical_3d",
+      fitted_zones = names(posterior_draws),
+      n_zones_fitted = length(posterior_draws),
+      n_obs_total = nrow(data),
+      pooling_coefficient = prior_spec$pooling_coefficient,
+      timestamp = Sys.time()
+    )
+  )
+
+  class(fit) <- c("gc_hierarchical_fit", "list")
+
+  if (verbose) {
+    cat("Hierarchical shrinkage model with 3D spatial weights fitted successfully.\n")
+    cat("  Method: empirical Bayes shrinkage (analytical + spatial decay)\n")
+    cat("  Fitted zones:", fit$metadata$n_zones_fitted, "\n")
+    cat("  Total observations:", fit$metadata$n_obs_total, "\n")
+    cat("  Spatial decay function:", spatial_decay, "\n")
+  }
+
+  fit
 }
 
 

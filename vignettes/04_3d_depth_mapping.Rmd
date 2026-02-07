@@ -166,7 +166,7 @@ standardized <- gc_standardize_depths(
 
 ## Minimum/Maximum Autocorrelation Factors (MAF)
 
-**MAF decorrelation** improves multivariate simulation by separating spatial signal from noise. See **Vignette 05_ensemble** for MAF implementation. MAF separates spatial signal from noise:
+**MAF decorrelation** improves multivariate simulation by separating spatial signal from noise. See Vignette 02 (Ensemble Analysis & Risk Assessment) for MAF implementation. MAF separates spatial signal from noise:
 
 ```{r maf_concept, eval=FALSE}
 # Example: MAF decorrelation for multivariate simulation
@@ -200,7 +200,7 @@ maf_props <- gc_maf_transform(
 
 ## True 3D Geostatistics
 
-**Stratigraphic coordinate transformation** enables complex geometry handling. See **Vignette 10: 3D Stratigraphic Geostatistics** for complete implementation including variogram fitting, 3D simulation, and block averaging:
+**Stratigraphic coordinate transformation** enables complex geometry handling. See Vignette 10 (3D Geostatistics with Stratigraphic Coordinates) for complete implementation including variogram fitting, 3D simulation, and block averaging:
 
 ```{r stratigraphic_placeholder, eval=FALSE}
 # Example: Stratigraphic coordinate transformation for 3D modeling

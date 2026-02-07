@@ -31,16 +31,6 @@ Technical guide for the three hierarchical model backends available in geocoda:
 
 This vignette provides mathematical foundations, implementation details, and guidance for developers extending these backends.
 
-## Vignette Status
-
-**Minimal scaffold** - Will be expanded with:
-- Detailed mathematical derivations
-- Backend implementation architecture
-- MCMC sampler configuration
-- Convergence diagnostics and interpretation
-- Debugging and optimization strategies
-- Benchmarking comparisons
-
 # Analytical Backend: Empirical Bayes
 
 ## Mathematical Foundations

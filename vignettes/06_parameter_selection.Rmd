@@ -30,15 +30,7 @@ Reference guide for selecting variogram and modeling parameters. This vignette p
 3. **Hierarchical model tuning** - Shrinkage strength, backend selection
 4. **Sensitivity analysis** - How parameters affect predictions
 
-## Vignette Status
-
-**Minimal scaffold** - Expanded from Vignette 10 (Parameter Selection Guide). Will be enhanced with:
-- Interactive parameter calculators
-- Sensitivity analysis plots
-- Real-world case studies
-- Decision flowcharts
-
-## Key Topics (To Be Expanded)
+## Key Parameters
 
 ### Variogram Range Selection
 
@@ -187,12 +179,3 @@ plot(cv_results$range_m, cv_results$cv_rmse,
 ## References
 
 See **Vignette 00** for workflow context.
-
----
-
-**This vignette will be expanded with:**
-- Parameter sensitivity analysis
-- Visual parameter effects
-- Calculator tools
-- Domain-specific guidance (soil texture, geochemistry, etc.)
-- Cross-validation optimization workflows

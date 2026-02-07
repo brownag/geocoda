@@ -1,6 +1,155 @@
 # geocoda (development version)
 
-## New Features - Phase 1: Risk Assessment & Decision Support
+## Per-Zone Risk Assessment & Carbon Compliance (Phase 3.0)
+
+### New Functions
+
+**Per-Zone Risk Assessment:**
+- `gc_risk_assessment_per_zone()` - Expected loss under asymmetric costs, stratified by zone
+  - Asymmetric cost modeling (high_under vs high_over penalties)
+  - Multi-component support (assess several soil properties simultaneously)
+  - Zone-aware decision support for resource allocation
+  - Output: Risk metrics with probability breakdown per zone
+
+**Per-Zone Carbon Auditing:**
+- `gc_carbon_audit_per_zone()` - Carbon stock estimation with compliance verification
+  - SoilGrids empirical carbon model and custom carbon fraction options
+  - Bootstrap-based confidence intervals
+  - Compliance status: Verified / Uncertain / At Risk
+  - Credit issuance with conservative adjustments
+
+### Features
+
+- Zone-stratified decision support following Phase 2 ensemble integration
+- Flexible zone specification: zone_col, zone_definition (sf/factor/character)
+- Full 39-test comprehensive test suite validating all aspects
+- Examples: 05_per_zone_risk_assessment_decision_support.Rmd with complete workflow
+- 800+ lines of production-ready example code
+
+### Documentation
+
+- Roxygen2-generated comprehensive man pages
+- Example demonstrates cost matrix definition, decision matrices, sensitivity analysis
+
+---
+
+## Advanced Diagnostics & Uncertainty Quantification (Phase 3.1)
+
+### New Functions
+
+**Cross-Validation:**
+- `gc_cross_validate_per_zone()` - K-fold CV metrics stratified by zone
+  - Identifies under-validated zones needing additional data
+  - Separate RMSE/MAE/R² per zone and fold
+  - Supports k-fold or leave-one-out strategies
+  - Custom model function support
+
+**Compositional Entropy:**
+- `gc_compute_entropy_per_zone()` - Shannon/Simpson entropy per zone
+  - Identifies compositional uncertainty hotspots
+  - Normalized to [0,1] for cross-zone comparison
+  - Dominant component identification
+  - Uncertainty classification (Low/Medium/High)
+
+**Bootstrap Parameter Uncertainty:**
+- `gc_bootstrap_uncertainty_per_zone()` - Parameter CI from resampling
+  - Zone-specific bootstrap-based confidence intervals
+  - Assesses parameter estimate stability
+  - Configurable confidence levels and replications
+  - Detects whether zones are meaningfully distinct
+
+### Features
+
+- Comprehensive 16-test scenario coverage (input validation, computation, edge cases)
+- Example: 06_per_zone_model_diagnostics.Rmd with integrated diagnostic dashboard
+- Composite confidence scoring combining all three metrics
+- Sampling recommendation framework based on diagnostics
+
+### Documentation
+
+- Vignette 09: Advanced Diagnostics & Uncertainty Quantification (600+ lines)
+- Diagnostic best practices and interpretation guidelines
+- Usage patterns for iterative model refinement
+
+---
+
+## 3D Stratified Geostatistics (Phase 3.2)
+
+### New Functions
+
+**3D Variogram Fitting:**
+- `gc_fit_vgm_3d_per_zone()` - Zone-specific 3D variogram models
+  - Lateral vs vertical anisotropy quantification
+  - 3D distance computation respecting domain bounds
+  - Per-zone variogram summaries with range estimates
+  - Anisotropy ratio calculation (lateral/vertical)
+
+**Nested Hierarchy Definition:**
+- `gc_define_nested_hierarchy()` - Multi-scale domain × depth structures
+  - Lateral domains (geological/topographic) × depth strata (pedogenic)
+  - Configurable depth breaks for flexible stratification
+  - Creates 2D grid of hierarchical units for modeling
+
+**3D Hierarchical Simulation:**
+- `gc_sim_hierarchical_3d_per_zone()` - 3D ensemble respecting zone/depth structure
+  - Generates compositional realizations on 3D prediction grid
+  - Depth-dependent variability modeling (compaction effect)
+  - Zone × depth hierarchical parameter support
+  - Full ensemble with spatial coordinates
+
+### Features
+
+- 23-test comprehensive validation of 3D functions
+- Examples: 
+  - 07_stratified_3d_geostatistics.Rmd (theory + 3D variogram patterns)
+  - 08_complete_3d_stratified_workflow.Rmd (end-to-end risk and carbon application)
+- Depth profile extraction and visualization templates
+- Spatial variability by depth assessment
+
+### Documentation
+
+- Man pages with detailed usage and conceptual explanations
+- Examples include depth-stratified composition profiles and uncertainty mapping
+- 3D-specific best practices (anisotropy interpretation, depth modeling)
+
+---
+
+## Overall Phase 3 Summary
+
+### Total Additions
+
+- **6 new functions** (2 risk + 3 diagnostics + 3 3D spatial)
+- **4 comprehensive examples** (05-08_*.Rmd: 2200+ lines total)
+- **3 test suites** (120+ tests across diagnostics, 3D, and integration)
+- **2 documentation files** (Vignette 09, Complete Stratification Guide)
+- **README enhancement** with stratified modeling overview
+
+### Backward Compatibility
+
+All Phase 3 additions are new functions; no breaking changes to existing API.
+Works seamlessly with Phase 1-2 infrastructure (gc_identify_strata, HZM, ensemble).
+
+### Integration Pattern
+
+Phase 3.0-3.2 follows consistent per-zone suffix pattern:
+```
+gc_ensemble_per_zone() [Phase 2]
+gc_percentile_map_per_zone() [Phase 2]
+gc_probability_map_per_zone() [Phase 2]
+gc_ensemble_quality_report_per_zone() [Phase 2]
+gc_risk_assessment_per_zone() [Phase 3.0]
+gc_carbon_audit_per_zone() [Phase 3.0]
+gc_cross_validate_per_zone() [Phase 3.1]
+gc_compute_entropy_per_zone() [Phase 3.1]
+gc_bootstrap_uncertainty_per_zone() [Phase 3.1]
+gc_fit_vgm_3d_per_zone() [Phase 3.2]
+gc_define_nested_hierarchy() [Phase 3.2]
+gc_sim_hierarchical_3d_per_zone() [Phase 3.2]
+```
+
+---
+
+## Risk Assessment & Decision Support Legacy (Phase 3.0 Precursor)
 
 ### Risk Assessment Functions
 
@@ -33,12 +182,11 @@
 
 ### Documentation & Vignettes
 
-- **New vignette**: "Risk Assessment and Decision Support in Soil Mapping"
-  - Complete workflow from simulation to decision
-  - Carbon credit eligibility example
-  - Contamination remediation case study
-  - Management zone delineation
-  - Loss function framework and best practices
+Vignette coverage includes:
+- Ensemble Analysis & Risk Assessment (vignette 02)
+- Complex workflow and advanced examples (vignette 00, 10)
+- Parameter selection guidelines (vignette 06)
+- FAQ and troubleshooting (vignette 07)
 
 ### Features
 
@@ -50,10 +198,10 @@
 
 ### Backward Compatibility
 
-- ✓ Fully backward compatible
-- ✓ All existing tests continue to pass
-- ✓ Risk assessment functions are opt-in (new functions, no modifications to existing)
-- ✓ Existing code requires zero modifications
+- [Yes] Fully backward compatible
+- [Yes] All existing tests continue to pass
+- [Yes] Risk assessment functions are opt-in (new functions, no modifications to existing)
+- [Yes] Existing code requires zero modifications
 
 ### Testing
 
@@ -65,9 +213,9 @@
 
 ---
 
-## New Features - Phase 2: Multi-Backend Hierarchical Models
+## Multi-Backend Hierarchical Models
 
-### MCMC Backends for Hierarchical Models
+### MCMC Backends
 
 **Implemented Stan HMC Backend:**
 
@@ -115,17 +263,11 @@
 
 ### Documentation & Vignettes
 
-- **New vignette**: "Hierarchical Model Backends" - comprehensive guide to all three backends
-  - When to use each backend (decision tree and recommendations)
-  - Performance comparison and timing benchmarks
-  - Detailed examples for each backend
-  - Advanced topics: estimated pooling, covariance priors, parallel computation
-  - Troubleshooting common issues
-- **Updated function documentation**: `gc_fit_hierarchical_model()` includes:
-  - Backend selection examples
-  - Parameter descriptions for MCMC backends
-  - Diagnostic interpretation guidance
-  - Cross-backend comparison examples
+- Vignette 08: "Hierarchical Model Backends: Deep Dive"
+  - When to use each backend (analytical, Stan, Nimble)
+  - Performance benchmarks and examples
+  - Troubleshooting backend-specific issues
+- Function documentation: `gc_fit_hierarchical_model()` with backend selection examples
 
 ### Dependencies
 
@@ -139,10 +281,10 @@ MCMC backends are optional. Analytical backend always available without addition
 
 ### Backward Compatibility
 
-- ✓ Default behavior unchanged: `gc_fit_hierarchical_model(data, priors)` uses analytical backend
-- ✓ All existing tests continue to pass without modification
-- ✓ Existing code using analytical method requires no changes
-- ✗ Code using old MCMC parameters must be updated to specify backend or remove parameters
+- [Yes] Default behavior unchanged: `gc_fit_hierarchical_model(data, priors)` uses analytical backend
+- [Yes] All existing tests continue to pass without modification
+- [Yes] Existing code using analytical method requires no changes
+- [No] Code using old MCMC parameters must be updated to specify backend or remove parameters
 
 ### Testing
 
@@ -175,11 +317,13 @@ MCMC backends are optional. Analytical backend always available without addition
 
 ### Documentation
 
-- Enhanced README with workflow diagrams and examples
-- New Getting Started vignette for beginners
-- 5 workflow vignettes covering core functionality
-- Real-world case study and FAQ vignettes
-- Function examples added to key functions
+- Comprehensive vignette collection covering:
+  - Soil texture workflow and complete examples
+  - Ensemble analysis and risk assessment
+  - Hierarchical and 3D spatial modeling
+  - SSURGO integration  
+  - Parameter selection and troubleshooting
+- Function-level documentation with examples
 
 ### Diagnostic Functions
 - Cross-validation framework (LOO + K-fold)
@@ -207,6 +351,9 @@ MCMC backends are optional. Analytical backend always available without addition
 - New: `soilDB` (suggests)
 
 ## Getting Started
-- `vignette("Getting Started")` for beginners
-- `vignette("SSURGO Integration")` for production use
+
+See vignettes for detailed examples:
+- Soil Texture Workflow (vignette 00) - Complete beginner workflow
+- SSURGO Integration (vignette 05) - Production data integration
+- FAQ & Troubleshooting (vignette 07) - Common issues and solutions
 

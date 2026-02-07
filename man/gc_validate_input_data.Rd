@@ -13,7 +13,13 @@ gc_validate_input_data(
   sum_tolerance = 1,
   check_spatial = TRUE,
   check_outliers = TRUE,
-  verbose = TRUE
+  verbose = TRUE,
+  outlier_iqr_multiplier = 1.5,
+  missing_value_threshold = 0.1,
+  sum_error_proportion_threshold = 0.2,
+  clustering_threshold = 0.01,
+  min_sample_size = 50,
+  outlier_review_threshold = 0.05
 )
 }
 \arguments{
@@ -41,6 +47,25 @@ Required if data is not sf}
 (default TRUE)}
 
 \item{verbose}{Logical, print detailed messages (default TRUE)}
+
+\item{outlier_iqr_multiplier}{Numeric, IQR multiplier for outlier detection
+(default 1.5, standard Tukey fences). Larger values flag fewer outliers.}
+
+\item{missing_value_threshold}{Numeric proportion \link{0, 1}, flagging threshold
+for missing values per component (default 0.1, i.e., 10\% missing triggers recommendation).
+Set to NULL to disable missing value recommendations.}
+
+\item{sum_error_proportion_threshold}{Numeric proportion \link{0, 1}, if composition
+sum violations exceed this, treated as "error" rather than "warning" (default 0.2).}
+
+\item{clustering_threshold}{Numeric \link{0, 1}, relative distance ratio flagging
+points clustered abnormally close (default 0.01 = 1\% of median distance).}
+
+\item{min_sample_size}{Integer, warn if sample size falls below this threshold
+(default 50, geostatistical stability consideration).}
+
+\item{outlier_review_threshold}{Numeric proportion \link{0, 1}, recommend review if
+outlier proportion exceeds this (default 0.05 = 5\%).}
 }
 \value{
 A list with elements:

@@ -1,0 +1,456 @@
+---
+title: "Complete 3D Stratified Workflow: Mapping and Decision Support"
+author: "geocoda"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 12,
+  fig.height = 8,
+  dpi = 100
+)
+```
+
+# Complete 3D Stratified Geostatistical Workflow
+
+This example demonstrates an end-to-end 3D workflow: from domain stratification
+through 3D ensemble simulation to uncertainty mapping and decision support.
+Applies 3D simulation for resource assessment under complex domain structure.
+
+## 1. Problem Setup: Soil Carbon Inventory in Stratified Terrain
+
+```{r problem-setup}
+library(geocoda)
+library(ggplot2)
+library(dplyr)
+
+# Goal: Estimate soil carbon stocks in 3D across layered topography
+# with uncertain domain boundaries
+
+# Create realistic 3-zone domain with topographic influence
+set.seed(123)
+
+n_samples_per_zone <- 80
+
+# Geographic zones (lateral stratification)
+upland <- data.frame(
+  zone = "upland",
+  x = rnorm(n_samples_per_zone, mean = 2.5, sd = 1.2),
+  y = rnorm(n_samples_per_zone, mean = 5, sd = 2),
+  elev = rnorm(n_samples_per_zone, mean = 450, sd = 50)
+)
+
+midslope <- data.frame(
+  zone = "midslope",
+  x = rnorm(n_samples_per_zone, mean = 5, sd = 1.5),
+  y = rnorm(n_samples_per_zone, mean = 5, sd = 2),
+  elev = rnorm(n_samples_per_zone, mean = 300, sd = 40)
+)
+
+lowland <- data.frame(
+  zone = "lowland",
+  x = rnorm(n_samples_per_zone, mean = 7.5, sd = 1.2),
+  y = rnorm(n_samples_per_zone, mean = 5, sd = 2),
+  elev = rnorm(n_samples_per_zone, mean = 150, sd = 30)
+)
+
+survey_data <- rbind(upland, midslope, lowland)
+
+# Add depth dimension (soil profiles: sampled at 3 depths)
+profiles_list <- list()
+for (i in seq_len(nrow(survey_data))) {
+  for (depth in c("surface", "mid", "deep")) {
+    depth_z <- ifelse(depth == "surface", 10,
+                      ifelse(depth == "mid", 40, 75))
+
+    if (depth == "surface") {
+      oc_pct <- rnorm(1, mean = 2.5, sd = 0.5) # organic carbon %
+    } else if (depth == "mid") {
+      oc_pct <- rnorm(1, mean = 1.2, sd = 0.3)
+    } else {
+      oc_pct <- rnorm(1, mean = 0.5, sd = 0.2)
+    }
+
+    profiles_list[[length(profiles_list) + 1]] <- data.frame(
+      zone = survey_data$zone[i],
+      x = survey_data$x[i],
+      y = survey_data$y[i],
+      elev = survey_data$elev[i],
+      depth_cm = depth_z,
+      depth_class = depth,
+      oc_percent = max(oc_pct, 0.1)
+    )
+  }
+}
+
+soil_profiles <- do.call(rbind, profiles_list)
+rownames(soil_profiles) <- NULL
+
+cat("Soil Profile Survey Data\n")
+cat("========================\n")
+cat(sprintf("Samples: %d profiles (3 depths each)\n", nrow(soil_profiles) / 3))
+cat(sprintf("Zones: %s\n", paste(unique(soil_profiles$zone), collapse = ", ")))
+cat(sprintf("Depth range: %d - %d cm\n", 
+            min(soil_profiles$depth_cm), max(soil_profiles$depth_cm)))
+cat(sprintf("\nOrganic Carbon (%%) by Zone and Depth:\n"))
+
+oc_summary <- soil_profiles %>%
+  group_by(zone, depth_class) %>%
+  summarise(
+    mean_oc = mean(oc_percent),
+    sd_oc = sd(oc_percent),
+    n = n(),
+    .groups = "drop"
+  )
+print(oc_summary)
+```
+
+## 2. Spatial Structure Analysis
+
+```{r spatial-structure}
+# Examine spatial clustering by zone
+p1 <- ggplot(soil_profiles, aes(x = x, y = elev, color = zone)) +
+  geom_point(size = 2, alpha = 0.6) +
+  facet_wrap(~depth_class) +
+  labs(
+    title = "Survey Sampling: Spatial Distribution by Depth",
+    x = "X Coordinate (km)",
+    y = "Elevation (m)",
+    color = "Zone"
+  ) +
+  theme_minimal()
+
+print(p1)
+
+# Zone boundary uncertainty
+cat("\nZone Boundary Definition\n")
+cat("========================\n")
+cat("Upland: x < 3.5 km\n")
+cat("Midslope: 3.5 ≤ x < 6 km\n")
+cat("Lowland: x ≥ 6 km\n")
+cat("\nNote: Zone boundaries in this example are overlapping distributions\n")
+cat("In practice, use: topography, geology, visible soil properties\n")
+```
+
+## 3. Define Nested Hierarchy and Fit HZM
+
+```{r fit-hierarchical-model}
+# Create nested hierarchy for 3D domain
+h_nested <- gc_define_nested_hierarchy(
+  domain_zones = c("upland", "midslope", "lowland"),
+  depth_strata = c("surface", "mid", "deep"),
+  depth_breaks = c(0, 25, 55, 100)
+)
+
+cat("Nested Hierarchy for 3D Modeling\n")
+cat("=================================\n")
+print(h_nested$nested_units)
+
+# Create auxiliary data for HZM fitting (ILR of compositions)
+# For this example, use OC as univariate; in practice would use full 3-part composition
+hzm_data <- data.frame(
+  OC = soil_profiles$oc_percent,
+  zone = soil_profiles$zone,
+  depth = soil_profiles$depth_cm,
+  x = soil_profiles$x,
+  y = soil_profiles$y
+)
+
+# Fit HZM by zone
+hz_def <- gc_define_hierarchy(
+  data = hzm_data,
+  comp_cols = "OC",
+  group_col = "zone",
+  var_order = "variance"
+)
+
+hz_fit <- gc_fit_hierarchical_model(
+  data = hzm_data,
+  object = hz_def,
+  verbose = FALSE
+)
+
+cat("\nHierarchical Model Summary\n")
+cat("==========================\n")
+print(hz_fit$hierarchy)
+```
+
+## 4. Generate 3D Prediction Domain
+
+```{r create-prediction-domain}
+# Create 3D prediction grid across domain
+pred_grid <- expand.grid(
+  x = seq(1, 9, by = 0.5),
+  y = seq(2, 8, by = 0.5),
+  depth = c(10, 30, 50, 75)
+)
+
+# Assign zones based on x coordinate
+pred_grid$zone <- cut(pred_grid$x,
+                      breaks = c(0, 3.5, 6, 10),
+                      labels = c("upland", "midslope", "lowland"))
+
+# Estimate elevation from x (topographic trend)
+pred_grid$elev <- 450 - 150 * (pred_grid$x / 10)
+
+cat("3D Prediction Grid\n")
+cat("==================\n")
+cat(sprintf("Total prediction points: %d\n", nrow(pred_grid)))
+cat(sprintf("Grid extent x: %.1f - %.1f km\n", min(pred_grid$x), max(pred_grid$x)))
+cat(sprintf("Grid extent y: %.1f - %.1f km\n", min(pred_grid$y), max(pred_grid$y)))
+cat(sprintf("Depth layers: %s cm\n", paste(unique(pred_grid$depth), collapse = ", ")))
+cat(sprintf("Zones represented: %s\n", 
+            paste(unique(pred_grid$zone), collapse = ", ")))
+```
+
+## 5. Simulate 3D Ensemble
+
+```{r simulate-3d-ensemble}
+ensemble_oc_3d <- gc_sim_hierarchical_3d_per_zone(
+  object = hz_fit,
+  n = 200,
+  nested_hierarchy = h_nested,
+  coords = pred_grid,
+  zone_vector = pred_grid$zone
+)
+
+cat("3D Ensemble Simulation Complete\n")
+cat("==============================\n")
+cat(sprintf("Realizations: %d\n", ensemble_oc_3d$n_realizations))
+cat(sprintf("Locations: %d\n", ensemble_oc_3d$n_locations))
+cat(sprintf("Total ensemble points: %d\n\n", nrow(ensemble_oc_3d$data)))
+
+# Check ensemble integrity
+print(head(ensemble_oc_3d$data))
+```
+
+## 6. Carbon Stock Estimation (30 cm depth layer)
+
+```{r carbon-stock-estimation}
+# Estimate carbon stocks: C_stock (Mg/ha) = OC % × BD (g/cm³) × 10
+# Using typical bulk densities by zone
+
+bulk_density <- data.frame(
+  zone = c("upland", "midslope", "lowland"),
+  bd = c(1.45, 1.35, 1.25) # g/cm³
+)
+
+# Join ensemble with bulk densities
+ensemble_oc_3d$data <- ensemble_oc_3d$data %>%
+  left_join(bulk_density, by = "zone")
+
+# Calculate carbon stock for surface layer (0-30 cm)
+# Divide by 100 to convert OC % to fraction; multiply by BD and depth
+surface_layer <- ensemble_oc_3d$data %>%
+  filter(z <= 30) %>%
+  mutate(
+    c_stock_mg_ha = (SAND / 100) * bd * 30 * 10 # simplified: use SAND as proxy
+  )
+
+# Carbon stock summary by zone
+carbon_summary <- surface_layer %>%
+  group_by(zone, realization) %>%
+  summarise(
+    mean_c_stock = mean(c_stock_mg_ha, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(zone) %>%
+  summarise(
+    mean_stock = mean(mean_c_stock),
+    sd_stock = sd(mean_c_stock),
+    ci_lower_95 = quantile(mean_c_stock, 0.025),
+    ci_upper_95 = quantile(mean_c_stock, 0.975),
+    .groups = "drop"
+  )
+
+cat("Carbon Stock Inventory (0-30 cm)\n")
+cat("================================\n")
+print(carbon_summary)
+
+# Visualize uncertainty
+p_carbon <- ggplot(carbon_summary, aes(x = reorder(zone, mean_stock))) +
+  geom_point(aes(y = mean_stock), size = 3, color = "black") +
+  geom_errorbar(aes(ymin = ci_lower_95, ymax = ci_upper_95), width = 0.2) +
+  labs(
+    title = "Carbon Stock Estimates with 95% CI (0-30 cm)",
+    x = "Zone",
+    y = "Carbon Stock (Mg C/ha)",
+    subtitle = "Wider CI = greater uncertainty"
+  ) +
+  theme_minimal()
+
+print(p_carbon)
+```
+
+## 7. Depth-Stratified Carbon Inventory
+
+```{r stratified-carbon-inventory}
+# Expand to full profile (0-100 cm)
+ensemble_full <- ensemble_oc_3d$data %>%
+  mutate(
+    c_stock_mg_ha = (SAND / 100) * bd * 25 * 10 # ~25cm per layer
+  )
+
+# Carbon by depth class
+carbon_by_depth <- ensemble_full %>%
+  mutate(
+    depth_class = cut(z, breaks = c(0, 30, 60, 100),
+                      labels = c("surface_0.30cm", "mid_30.60cm", "deep_60.100cm"))
+  ) %>%
+  group_by(zone, depth_class) %>%
+  summarise(
+    mean_c = mean(c_stock_mg_ha, na.rm = TRUE),
+    sd_c = sd(c_stock_mg_ha, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+cat("Carbon Stocks by Depth Layer\n")
+cat("===========================\n")
+print(carbon_by_depth)
+
+# Visualize depth profiles
+p_depth <- ggplot(carbon_by_depth, aes(x = depth_class, y = mean_c, fill = zone)) +
+  geom_col(position = "dodge") +
+  geom_errorbar(aes(ymin = pmax(0, mean_c - sd_c), ymax = mean_c + sd_c),
+                position = position_dodge(0.9), width = 0.2) +
+  labs(
+    title = "Carbon Stocks by Depth Layer and Zone",
+    x = "Depth Layer",
+    y = "Carbon Stock (Mg C/ha)",
+    fill = "Zone"
+  ) +
+  theme_minimal()
+
+print(p_depth)
+```
+
+## 8. Uncertainty Hotspot Mapping
+
+```{r uncertainty-hotspots}
+# Identify high-uncertainty areas
+uncertainty_map <- ensemble_full %>%
+  group_by(zone, x, y, z) %>%
+  summarise(
+    mean_sand = mean(SAND),
+    sd_sand = sd(SAND),
+    cv_sand = sd_sand / pmax(mean_sand, 1),
+    .groups = "drop"
+  )
+
+# High-uncertainty hotspots (CV > 0.3)
+hotspots <- uncertainty_map %>%
+  filter(cv_sand > 0.3)
+
+cat("Uncertainty Hotspots (CV > 0.3)\n")
+cat("===============================\n")
+cat(sprintf("Total hotspot locations: %d\n", nrow(hotspots)))
+cat(sprintf("Zones with hotspots: %s\n",
+            paste(unique(hotspots$zone), collapse = ", ")))
+
+# Visualize hotspots at surface
+surface_map <- uncertainty_map %>%
+  filter(z == 10)
+
+p_hotspots <- ggplot(surface_map, aes(x = x, y = y, color = cv_sand, size = cv_sand)) +
+  geom_point(alpha = 0.6) +
+  scale_color_gradient(low = "green", high = "red", limits = c(0, 0.5)) +
+  scale_size_continuous(range = c(2, 6)) +
+  labs(
+    title = "Uncertainty Hotspots (SAND Coefficient of Variation)",
+    x = "X (km)",
+    y = "Y (km)",
+    color = "CV",
+    size = "CV",
+    subtitle = "Red = high uncertainty; recommend additional sampling"
+  ) +
+  theme_minimal()
+
+print(p_hotspots)
+```
+
+## 9. Decision Support: Sampling Recommendations
+
+```{r sampling-recommendations}
+# Rank zones by uncertainty and data scarcity
+decision_table <- data.frame(
+  zone = unique(ensemble_full$zone),
+  n_samples_survey = sapply(unique(ensemble_full$zone), function(z) {
+    sum(soil_profiles$zone == z) / 3
+  }),
+  mean_cv = sapply(unique(ensemble_full$zone), function(z) {
+    mean(subset(uncertainty_map, zone == z)$cv_sand)
+  }),
+  n_hotspots = sapply(unique(ensemble_full$zone), function(z) {
+    sum(subset(hotspots, zone == z)$zone == z)
+  })
+)
+
+decision_table$priority <- rank(-decision_table$mean_cv)
+
+cat("Sampling Prioritization Matrix\n")
+cat("==============================\n")
+print(decision_table[order(decision_table$priority), ])
+
+cat("\nRecommendations:\n")
+for (i in seq_len(nrow(decision_table))) {
+  zone <- decision_table$zone[i]
+  cv <- decision_table$mean_cv[i]
+  hotspots_n <- decision_table$n_hotspots[i]
+  priority <- decision_table$priority[i]
+
+  cat(sprintf("\nZone: %s (Priority %d)\n", zone, priority))
+
+  if (cv > 0.25) {
+    cat(sprintf("  - URGENT: High uncertainty (CV = %.3f)\n", cv))
+    cat("  - Recommendation: Add %d additional profiles\n", hotspots_n %/% 5 + 5)
+  } else if (cv > 0.15) {
+    cat(sprintf("  - MODERATE: Medium uncertainty (CV = %.3f)\n", cv))
+    cat("  - Recommendation: Add 3-5 profiles to hotspots\n")
+  } else {
+    cat(sprintf("  - ADEQUATE: Low uncertainty (CV = %.3f)\n", cv))
+    cat("  - Recommendation: Current sampling sufficient\n")
+  }
+}
+```
+
+## 10. Best Practices Summary
+
+### 3D Domain Stratification
+
+1. **Define zones meaningfully**: Geology, topography, visible soil properties
+2. **Extend vertically**: Separate shallow (roots) from deep (parent material)
+3. **Account for interaction**: Zone effects may vary with depth
+
+### Ensemble Simulation
+
+1. Use **nested hierarchy** to define multi-scale structure
+2. Simulate **per-zone/per-depth** ensembles (not global)
+3. Generate **sufficient realizations** (100-500) for robust inference
+
+### Uncertainty Assessment
+
+1. Map **coefficient of variation** to identify problem areas
+2. Use **confidence intervals** to bound estimates
+3. Identify **hotspots** for targeted additional sampling
+
+### Decision Making
+
+1. **Integrate multiple metrics**: Sample size, CV, spatial pattern
+2. **Prioritize high-uncertainty zones**: Maximize information gain
+3. **Iterate**: Collect new data → refit model → reassess uncertainty
+
+## Summary
+
+This complete 3D stratified workflow demonstrates:
+
+- Lateral domain stratification (upland/midslope/lowland)
+- Vertical depth stratification (surface/mid/deep)
+- 3D hierarchical simulation with nested zones
+- Uncertainty quantification and hotspot mapping
+- Data-driven sampling recommendations
+
+Use this as a template for complex multi-dimensional soil and environmental assessments.

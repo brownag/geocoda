@@ -7,6 +7,10 @@
 #' @param ilr_params A list returned by `gc_ilr_params()`.
 #' @param extent A numeric vector of length 4: `c(xmin, ymin, xmax, ymax)`,
 #'   or a spatial object (sf, terra) from which extent can be extracted.
+#' @param range_ratio Numeric, ratio applied to spatial extent diagonal to suggest
+#'   range parameter (default 1/3, i.e., range = extent_diagonal / 3).
+#' @param nugget_ratio Numeric, fraction of mean sill to suggest as nugget effect
+#'   (default 0.01, i.e., 1% of sill).
 #'
 #' @return A list containing:
 #'   - `range`: Suggested range parameter (approximately 1/3 of the diagonal extent)
@@ -43,7 +47,7 @@
 #'
 #' @importFrom stats as.formula
 #' @export
-gc_vgm_defaults <- function(ilr_params, extent) {
+gc_vgm_defaults <- function(ilr_params, extent, range_ratio = 1/3, nugget_ratio = 0.01) {
   ilr_cov <- ilr_params$cov
   diag_cov <- diag(ilr_cov)
   mean_sill <- mean(diag_cov)
@@ -59,8 +63,8 @@ gc_vgm_defaults <- function(ilr_params, extent) {
 
   diag_dist <- sqrt((xmax - xmin)^2 + (ymax - ymin)^2)
 
-  suggested_range <- diag_dist / 3
-  suggested_nugget <- 0.01 * mean_sill
+  suggested_range <- diag_dist * range_ratio
+  suggested_nugget <- nugget_ratio * mean_sill
 
   list(
     range = suggested_range,
@@ -97,6 +101,10 @@ gc_vgm_defaults <- function(ilr_params, extent) {
 #' @param fit.ranges Logical. If `FALSE` (default), fixes ranges to fitted values
 #'   during LMC construction to avoid over-parameterization. If `TRUE`, allows
 #'   range re-optimization when building LMC models.
+#' @param eigenvalue_tolerance Numeric, threshold for eigenvalue positivity check
+#'   in LMC sill matrix (default `1e-10`). Smaller values (closer to zero) increase
+#'   tolerance for numerical precision issues. Increase to 1e-8 or 1e-6 for
+#'   poorly-conditioned matrices.
 #'
 #' @return A list with:
 #'   - If `aggregate = FALSE`: A list of length `D-1` where each element
@@ -182,7 +190,8 @@ gc_fit_vgm <- function(ilr_params,
                        width = NULL,
                        aggregate = FALSE,
                        correct.diagonal = 1.01,
-                       fit.ranges = FALSE) {
+                       fit.ranges = FALSE,
+                       eigenvalue_tolerance = 1e-10) {
   if (!all(c("x", "y") %in% colnames(data))) {
     stop("data must contain columns 'x' and 'y'")
   }
@@ -300,7 +309,7 @@ gc_fit_vgm <- function(ilr_params,
     sill_matrix <- matrix(mean_psill, nrow = n_ilr, ncol = n_ilr)
     diag(sill_matrix) <- mean_psill
     eigenvals <- eigen(sill_matrix, only.values = TRUE)$values
-    lmc_admissible <- all(eigenvals > 1e-10)
+    lmc_admissible <- all(eigenvals > eigenvalue_tolerance)
 
     if (!lmc_admissible) {
       warning(

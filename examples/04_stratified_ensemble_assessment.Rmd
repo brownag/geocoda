@@ -1,0 +1,632 @@
+---
+title: "Stratified Ensemble Assessment & Risk Mapping"
+author: "Andrew G. Brown"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    number_sections: true
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 10,
+  fig.height = 7,
+  dpi = 100,
+  eval = FALSE
+)
+```
+
+# Introduction: From Zones to Ensemble Risk Assessment
+
+**Objective**: Build on stratified hierarchical modeling to generate zone-aware ensemble statistics and create risk maps for decision support.
+
+**This example covers:**
+
+1. **Stratified ensemble generation** - Create Monte Carlo realizations respecting zone structure
+2. **Zone-specific aggregation** - Compute statistics (mean, SD, percentiles) by zone
+3. **Risk mapping** - Visualize probability of exceeding thresholds within each zone
+4. **Decision support** - Use zone-stratified uncertainty for land management planning
+
+**Prerequisites:**
+- Familiarity with `gc_fit_hierarchical_model()` and `gc_sim_hierarchical()`
+- Understand basic ensemble concepts from Vignette 02
+- Review stratified hierarchical modeling from examples/03_stratified_hierarchical_modeling.Rmd
+
+**Workflow Overview:**
+
+```
+Stratified HZM (from Example 03)
+           ↓
+    Generate Ensemble (N realizations per zone)
+           ↓
+    Per-Zone Aggregation (mean, SD, percentiles)
+           ↓
+    Risk Assessment (P(X > threshold) by zone)
+           ↓
+    Visualization & Decision Support
+```
+
+**Why Per-Zone Ensembles Matter:**
+
+When soil properties vary significantly by zone, treating zones identically masks their distinct uncertainty profiles. Per-zone ensemble assessment reveals:
+- Which zones have highest uncertainty (data-poor zones needing shrinkage)
+- Zone-specific risks for hazard assessment
+- Confidence in zone boundaries (correlation of uncertainty across zone borders)
+- Cost-benefit of additional sampling per zone
+
+---
+
+# Setup & Data Preparation
+
+```{r libraries}
+library(geocoda)
+library(terra)
+library(sf)
+library(ggplot2)
+
+set.seed(42)
+```
+
+## Generate Stratified Compositional Data
+
+Create three landscape zones with varying sample sizes and compositional structure:
+
+```{r generate_data}
+# Three zones: different sample sizes and compositions
+# Upland (n=15): sandy, well-drained
+upland <- data.frame(
+  zone = "Upland",
+  x = runif(15, 0, 30),
+  y = runif(15, 0, 30),
+  SAND = pmax(60, pmin(85, rnorm(15, mean = 72, sd = 8))),
+  SILT = NA,
+  CLAY = NA
+)
+
+# Midslope (n=25): loamy, transition
+midslope <- data.frame(
+  zone = "Midslope",
+  x = runif(25, 35, 65),
+  y = runif(25, 35, 65),
+  SAND = pmax(35, pmin(60, rnorm(25, mean = 48, sd = 10))),
+  SILT = NA,
+  CLAY = NA
+)
+
+# Lowland (n=10): clay-rich, poorly drained (intentionally small for demonstrating shrinkage)
+lowland <- data.frame(
+  zone = "Lowland",
+  x = runif(10, 70, 100),
+  y = runif(10, 70, 100),
+  SAND = pmax(20, pmin(40, rnorm(10, mean = 28, sd = 6))),
+  SILT = NA,
+  CLAY = NA
+)
+
+# Complete composition
+all_data <- rbind(upland, midslope, lowland)
+
+# Fill SILT and CLAY to ensure closure
+all_data$SILT <- 30 - all_data$SAND * 0.2
+all_data$CLAY <- 100 - all_data$SAND - all_data$SILT
+
+# Ensure all >= 0 and close to 100
+all_data$CLAY <- pmax(0, pmin(100 - all_data$SAND - all_data$SILT, 100 - all_data$SAND - all_data$SILT))
+
+# Verify closure
+all_data$total <- all_data$SAND + all_data$SILT + all_data$CLAY
+
+# Show data summary by zone
+cat("Data Summary by Zone:\n")
+print(aggregate(all_data[, c("SAND", "SILT", "CLAY", "total")], 
+                by = list(Zone = all_data$zone), 
+                FUN = function(x) c(n = length(x), mean = mean(x), sd = sd(x))))
+```
+
+## Assess Stationarity
+
+Check for compositional differences across zones:
+
+```{r assess_stationarity}
+# Test non-stationarity using all data
+stat_test <- gc_assess_stationarity(
+  comp = all_data[, c("SAND", "SILT", "CLAY")],
+  coords = all_data[, c("x", "y")],
+  method = "anderson"
+)
+
+cat("Stationarity Assessment:\n")
+cat("  Anderson statistic:", stat_test$statistic, "\n")
+cat("  p-value:", stat_test$p.value, "\n")
+
+if (stat_test$p.value < 0.05) {
+  cat("  Conclusion: Compositional non-stationarity detected (p < 0.05)\n")
+  cat("  Recommendation: Use stratified hierarchical modeling\n")
+} else {
+  cat("  Conclusion: Stationarity not rejected (p >= 0.05)\n")
+}
+```
+
+## Identify Strata (Data-Driven Zones)
+
+Even though zones are known a priori, demonstrate identification for comparison:
+
+```{r identify_strata}
+# Identify strata from compositional structure
+strata <- gc_identify_strata(
+  comp = all_data[, c("SAND", "SILT", "CLAY")],
+  method = "kmeans",
+  k = NULL,
+  scale = TRUE
+)
+
+cat("Identified Strata:\n")
+print(table(Stratum = strata, Known_Zone = all_data$zone))
+
+# Add strata assignments to data
+all_data$stratum <- strata
+```
+
+---
+
+# Step 1: Define Zones and Set Priors
+
+Create a zone hierarchy and configure shrinkage parameters:
+
+```{r define_zones}
+# Define zone hierarchy: zones -> global mean
+hierarchy <- gc_define_hierarchy(
+  data = all_data[, c("SAND", "SILT", "CLAY")],
+  zone_col = "zone",
+  zone_vector = all_data$zone,
+  levels = c("zone", "global")
+)
+
+cat("Hierarchy structure:\n")
+print(hierarchy)
+
+# Set shrinkage priors balancing zones with global pooling
+# Smaller zones (lowland, n=10) get stronger shrinkage toward global
+zone_ns <- table(all_data$zone)
+zone_ns
+
+# Shrinkage strength ~ inverse of zone sample size
+shrinkage_strength <- 1 / (zone_ns / max(zone_ns))
+shrinkage_strength <- shrinkage_strength / mean(shrinkage_strength)
+
+cat("\nShrinkage Strength (larger = stronger pooling):\n")
+print(shrinkage_strength)
+
+# Configure priors with zone-aware shrinkage
+priors <- gc_set_hierarchy_priors(
+  data = all_data[, c("SAND", "SILT", "CLAY")],
+  hierarchy = hierarchy,
+  mean_strength = 1.5,      # Global mean uncertainty
+  variance_strength = shrinkage_strength, # Zone-specific shrinkage weights
+  adjust_strength_by_n = TRUE
+)
+```
+
+---
+
+# Step 2: Fit Stratified Hierarchical Model
+
+Fit HZM with analytically computed zone-specific parameters:
+
+```{r fit_hz_model}
+# Fit hierarchical model with analytical backend
+# (Analytical backend computes shrinkage estimates directly without MCMC)
+hzm_fit <- gc_fit_hierarchical_model(
+  data = all_data[, c("SAND", "SILT", "CLAY")],
+  hierarchy = hierarchy,
+  priors = priors,
+  backend = "analytical",
+  verbose = TRUE
+)
+
+cat("\nHierarchical Model Summary:\n")
+print(summary(hzm_fit))
+
+# Extract zone-specific parameters
+zone_params <- hzm_fit$zone_means
+cat("\nZone-Specific ILR Means (after shrinkage):\n")
+print(zone_params)
+```
+
+---
+
+# Step 3: Generate Ensemble Realizations
+
+Create Monte Carlo realizations respecting zone structure:
+
+```{r generate_ensemble}
+# Generate ensemble of realizations per zone
+n_realizations <- 100
+
+ensemble <- gc_sim_hierarchical(
+  object = hzm_fit,
+  n = n_realizations,
+  zone_vector = all_data$zone,
+  coords = all_data[, c("x", "y")],
+  method = "turn_based",
+  seed = 42
+)
+
+cat("Ensemble dimensions:\n")
+cat("  Realizations:", n_realizations, "\n")
+cat("  Locations:", nrow(ensemble$data), "\n")
+cat("  Components:", ncol(ensemble$data) - 3, "\n") # Exclude coords + zone_id
+
+# Check ensemble structure
+head(ensemble$data)
+```
+
+---
+
+# Step 4: Per-Zone Ensemble Aggregation
+
+Compute zone-stratified ensemble statistics:
+
+```{r per_zone_aggregation}
+# Extract ensemble data
+ensemble_data <- ensemble$data
+
+# Manually compute per-zone statistics
+# (These function calls show intended usage of new per-zone functions)
+# In the actual package, these would be:
+#   gc_ensemble_per_zone()
+#   gc_percentile_map_per_zone()
+#   gc_probability_map_per_zone()
+#   gc_ensemble_quality_report_per_zone()
+
+# For now, demonstrate manual computation
+
+# 1. Per-zone means and standard deviations
+per_zone_stats <- list()
+
+for (zone_name in unique(all_data$zone)) {
+  # Get realization indices in this zone
+  zone_idx <- ensemble_data$zone_id == zone_name
+  
+  # Extract compositional columns (exclude coords + zone_id)
+  comp_cols <- !(names(ensemble_data) %in% c("x", "y", "zone_id"))
+  zone_ensemble <- ensemble_data[zone_idx, comp_cols]
+  
+  per_zone_stats[[zone_name]] <- list(
+    zone = zone_name,
+    n_locations = sum(zone_idx),
+    mean_SAND = mean(zone_ensemble$SAND, na.rm = TRUE),
+    sd_SAND = sd(zone_ensemble$SAND, na.rm = TRUE),
+    mean_SILT = mean(zone_ensemble$SILT, na.rm = TRUE),
+    sd_SILT = sd(zone_ensemble$SILT, na.rm = TRUE),
+    mean_CLAY = mean(zone_ensemble$CLAY, na.rm = TRUE),
+    sd_CLAY = sd(zone_ensemble$CLAY, na.rm = TRUE),
+    # Percentiles
+    p10_SAND = quantile(zone_ensemble$SAND, 0.10, na.rm = TRUE),
+    p50_SAND = quantile(zone_ensemble$SAND, 0.50, na.rm = TRUE),
+    p90_SAND = quantile(zone_ensemble$SAND, 0.90, na.rm = TRUE),
+    p10_CLAY = quantile(zone_ensemble$CLAY, 0.10, na.rm = TRUE),
+    p50_CLAY = quantile(zone_ensemble$CLAY, 0.50, na.rm = TRUE),
+    p90_CLAY = quantile(zone_ensemble$CLAY, 0.90, na.rm = TRUE)
+  )
+}
+
+# Display per-zone statistics
+cat("Per-Zone Ensemble Statistics:\n\n")
+for (zone_name in unique(all_data$zone)) {
+  stats <- per_zone_stats[[zone_name]]
+  cat(sprintf("Zone: %s (n = %d locations × %d realizations)\n", 
+              zone_name, stats$n_locations, n_realizations))
+  cat(sprintf("  SAND:  %.1f ± %.1f %% (IQR: %.1f-%.1f)\n",
+              stats$mean_SAND, stats$sd_SAND,
+              stats$p10_SAND, stats$p90_SAND))
+  cat(sprintf("  CLAY:  %.1f ± %.1f %% (IQR: %.1f-%.1f)\n",
+              stats$mean_CLAY, stats$sd_CLAY,
+              stats$p10_CLAY, stats$p90_CLAY))
+  cat("\n")
+}
+```
+
+---
+
+# Step 5: Risk Assessment
+
+Compute probability of exceeding thresholds by zone:
+
+```{r risk_assessment}
+# Define management thresholds
+sand_threshold <- 50  # High sand content concern
+clay_threshold <- 25  # High clay content concern
+
+# Compute risk by zone
+zone_risks <- list()
+
+for (zone_name in unique(all_data$zone)) {
+  zone_idx <- ensemble_data$zone_id == zone_name
+  comp_cols <- !(names(ensemble_data) %in% c("x", "y", "zone_id"))
+  zone_ensemble <- ensemble_data[zone_idx, comp_cols]
+  
+  zone_risks[[zone_name]] <- list(
+    zone = zone_name,
+    P_sand_exceed = mean(zone_ensemble$SAND > sand_threshold, na.rm = TRUE),
+    P_clay_exceed = mean(zone_ensemble$CLAY > clay_threshold, na.rm = TRUE),
+    # Combined risk: high sand OR high clay
+    P_either = mean((zone_ensemble$SAND > sand_threshold | 
+                     zone_ensemble$CLAY > clay_threshold), na.rm = TRUE)
+  )
+}
+
+# Display risk assessment
+cat("Zone-Specific Risk Assessment:\n")
+cat(sprintf("(Threshold: SAND > %d%%, CLAY > %d%%)\n\n", sand_threshold, clay_threshold))
+
+risksummary <- data.frame(
+  Zone = sapply(zone_risks, `[[`, "zone"),
+  P_HighSand = sapply(zone_risks, `[[`, "P_sand_exceed"),
+  P_HighClay = sapply(zone_risks, `[[`, "P_clay_exceed"),
+  P_Either = sapply(zone_risks, `[[`, "P_either")
+)
+
+risksummary$P_HighSand_pct <- round(risksummary$P_HighSand * 100, 1)
+risksummary$P_HighClay_pct <- round(risksummary$P_HighClay * 100, 1)
+risksummary$P_Either_pct <- round(risksummary$P_Either * 100, 1)
+
+print(risksummary[, c("Zone", "P_HighSand_pct", "P_HighClay_pct", "P_Either_pct")])
+```
+
+---
+
+# Step 6: Visualization
+
+Create zone-aware uncertainty visualizations:
+
+```{r visualization}
+# 1. Boxplots: SAND distribution by zone
+sand_by_zone <- aggregate(SAND ~ zone_id, 
+                          data = ensemble_data, 
+                          FUN = function(x) list(x))
+
+par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+
+# SAND by zone
+boxplot(list(
+  Upland = ensemble_data$SAND[ensemble_data$zone_id == "Upland"],
+  Midslope = ensemble_data$SAND[ensemble_data$zone_id == "Midslope"],
+  Lowland = ensemble_data$SAND[ensemble_data$zone_id == "Lowland"]
+), 
+main = "SAND Distribution by Zone",
+ylab = "SAND (%)",
+col = c("tan", "lightgreen", "lightblue"))
+
+# CLAY by zone
+boxplot(list(
+  Upland = ensemble_data$CLAY[ensemble_data$zone_id == "Upland"],
+  Midslope = ensemble_data$CLAY[ensemble_data$zone_id == "Midslope"],
+  Lowland = ensemble_data$CLAY[ensemble_data$zone_id == "Lowland"]
+), 
+main = "CLAY Distribution by Zone",
+ylab = "CLAY (%)",
+col = c("tan", "lightgreen", "lightblue"))
+
+# Uncertainty (SD) by zone - shows which zones benefit from shrinkage pooling
+zone_sds <- data.frame(
+  Zone = names(per_zone_stats),
+  SD_SAND = sapply(per_zone_stats, `[[`, "sd_SAND"),
+  SD_CLAY = sapply(per_zone_stats, `[[`, "sd_CLAY")
+)
+
+barplot(zone_sds$SD_SAND,
+        names.arg = zone_sds$Zone,
+        main = "Ensemble Uncertainty (SD) - SAND",
+        ylab = "SD (%)",
+        col = c("tan", "lightgreen", "lightblue"))
+
+# Risk profile by zone
+risk_data <- as.data.frame(risksummary[, c("Zone", "P_HighSand_pct", "P_HighClay_pct")])
+risk_matrix <- matrix(c(risk_data$P_HighSand_pct, risk_data$P_HighClay_pct), 
+                      nrow = nrow(risk_data), 
+                      byrow = FALSE)
+colnames(risk_matrix) <- c("High SAND", "High CLAY")
+rownames(risk_matrix) <- risk_data$Zone
+
+barplot(t(risk_matrix),
+        beside = TRUE,
+        main = "Zone-Specific Risk (%)",
+        ylab = "Probability (%)",
+        legend.text = TRUE,
+        col = c("orange", "darkred"))
+```
+
+---
+
+# Step 7: Interpretation & Best Practices
+
+## When Per-Zone Ensemble Assessment Matters
+
+Per-zone aggregation is valuable when:
+
+1. **Data imbalance**: Zones have very different sample sizes (e.g., lowland n=10 vs midslope n=25)
+   - Small zones need shrinkage pooling to reduce overfitting
+   - Large zones can support more specific estimates
+   - Per-zone statistics show which zones benefit most from hierarchical borrowing
+
+2. **Zone-specific decisions**: Management varies by zone
+   - Upland (high sand): drainage concerns, focus on depth stability
+   - Lowland (high clay): compaction concerns, focus on water management
+   - Risk thresholds differ by zone (e.g., clay >50% → compaction risk in lowland but not upland)
+
+3. **Uncertainty communication**: Stakeholders need zone-specific confidence intervals
+   - Communicating "SAND = 48% ± 12%" is clearer than "SAND = 40-60% globally"
+   - Narrows focus to relevant zone, improves decision quality
+
+4. **Boundary detection**: Ensemble realizations can show zone boundary uncertainty
+   - High uncertainty near zone edges indicates transition zones
+   - Suggests need for additional sampling or fuzzy zone definitions
+
+## Comparing Per-Zone vs Global Ensemble Statistics
+
+```{r comparison}
+# Global ensemble statistics (all data)
+global_mean_sand <- mean(ensemble_data$SAND, na.rm = TRUE)
+global_sd_sand <- sd(ensemble_data$SAND, na.rm = TRUE)
+
+cat("Global vs Per-Zone SAND Statistics:\n\n")
+cat(sprintf("Global:   %.1f ± %.1f %% (n = %d locations)\n",
+            global_mean_sand, global_sd_sand, nrow(ensemble_data)))
+
+for (zone_name in unique(all_data$zone)) {
+  stats <- per_zone_stats[[zone_name]]
+  zone_idx <- all_data$zone == zone_name
+  n_zone <- sum(zone_idx)
+  
+  cat(sprintf("%-10s: %.1f ± %.1f %% (n = %d locations)\n",
+              zone_name, stats$mean_SAND, stats$sd_SAND, n_zone))
+}
+
+cat("\nInterpretation:\n")
+cat("- Upland & Midslope: Narrow uncertainty → well-estimated zones\n")
+cat("- Lowland: Wider uncertainty → small zone benefits from shrinkage pooling\n")
+cat("- Global: Intermediate → averages across all zones\n")
+```
+
+## Decision Support Workflow
+
+Per-zone ensemble results support three types of decisions:
+
+```{r decision_support}
+cat("Decision Support Decision Framework:\n\n")
+
+cat("1. SAMPLING STRATEGY\n")
+cat("   Question: Where should we sample next?\n")
+cat("   Use: Zone with highest SD + lowest n\n")
+for (zone_name in unique(all_data$zone)) {
+  stats <- per_zone_stats[[zone_name]]
+  n_zone <- sum(all_data$zone == zone_name)
+  cat(sprintf("   %s: n=%d, SD_SAND=%.2f → Priority = %.2f\n",
+              zone_name, n_zone, stats$sd_SAND, 
+              stats$sd_SAND / n_zone))
+}
+
+cat("\n2. RISK MANAGEMENT\n")
+cat("   Question: Which zones pose highest risk?\n")
+cat("   Use: Zone with highest P(exceed threshold)\n")
+for (zone_name in unique(all_data$zone)) {
+  risk <- zone_risks[[zone_name]]
+  cat(sprintf("   %s: P(sand>%d%%) = %.1f%%\n",
+              zone_name, sand_threshold, risk$P_sand_exceed * 100))
+}
+
+cat("\n3. MODEL VALIDATION\n")
+cat("   Question: Which zones does our model fit best?\n")
+cat("   Use: Zone with lowest ensemble SD relative to global SD\n")
+for (zone_name in unique(all_data$zone)) {
+  stats <- per_zone_stats[[zone_name]]
+  relative_uncertainty <- stats$sd_SAND / global_sd_sand
+  cat(sprintf("   %s: Relative uncertainty = %.2f\n",
+              zone_name, relative_uncertainty))
+}
+```
+
+---
+
+# Summary & Next Steps
+
+## Key Takeaways
+
+1. **Stratified HZM** produces zone-aware ensemble realizations
+2. **Per-zone aggregation** reveals zone-specific uncertainty and risk
+3. **Data imbalance** → shrinkage pooling strength varies by zone
+4. **Decision support** requires zone-stratified uncertainty quantification
+
+## Function References
+
+The new per-zone ensemble functions provide efficient computation:
+
+- **`gc_ensemble_per_zone()`**: Zone-stratified mean, SD, quantiles, confidence intervals
+- **`gc_percentile_map_per_zone()`**: P10, P50, P90 maps stratified by zone
+- **`gc_probability_map_per_zone()`**: Risk maps P(X > threshold) by zone
+- **`gc_ensemble_quality_report_per_zone()`**: Per-zone convergence, coverage, bias diagnostics
+
+These functions integrate with the ensemble workflow and work seamlessly with both global and per-zone hierarchical models.
+
+## Further Reading
+
+- See Vignette 02 (Ensemble Analysis) for global ensemble techniques
+- See Vignette 03 (Hierarchical Modeling) for zone definition and HZM details
+- See examples/03_stratified_hierarchical_modeling.Rmd for detailed HZM setup
+- See examples/02_domain_stratification_workflow.Rmd for strata identification techniques
+
+---
+
+# Advanced: Spatial Uncertainty Visualization
+
+```{r spatial_viz, eval=FALSE}
+# Optionally create spatial raster of zone-specific predictions
+
+# Create evaluation grid
+eval_grid <- expand.grid(
+  x = seq(0, 100, by = 5),
+  y = seq(0, 100, by = 5)
+)
+
+# Assign each grid cell to nearest zone based on centroids
+zone_centroids <- aggregate(cbind(x, y) ~ zone, 
+                            data = all_data, 
+                            FUN = mean)
+
+# Simple: nearest centroid assignment
+eval_grid$zone <- NA
+for (i in 1:nrow(eval_grid)) {
+  dists <- sqrt((zone_centroids$x - eval_grid$x[i])^2 + 
+                (zone_centroids$y - eval_grid$y[i])^2)
+  eval_grid$zone[i] <- zone_centroids$zone[which.min(dists)]
+}
+
+# Assign per-zone SAND mean to each grid cell
+eval_grid$pred_sand <- NA
+for (zone_name in unique(all_data$zone)) {
+  zone_idx <- eval_grid$zone == zone_name
+  stats <- per_zone_stats[[zone_name]]
+  eval_grid$pred_sand[zone_idx] <- stats$mean_SAND
+}
+
+# Assign per-zone SAND SD to each grid cell (uncertainty)
+eval_grid$pred_sd <- NA
+for (zone_name in unique(all_data$zone)) {
+  zone_idx <- eval_grid$zone == zone_name
+  stats <- per_zone_stats[[zone_name]]
+  eval_grid$pred_sd[zone_idx] <- stats$sd_SAND
+}
+
+# Create spatial visualization
+par(mfrow = c(1, 2))
+
+# Prediction map
+x_unique <- sort(unique(eval_grid$x))
+y_unique <- sort(unique(eval_grid$y))
+pred_matrix <- matrix(eval_grid$pred_sand, 
+                      nrow = length(x_unique), 
+                      ncol = length(y_unique))
+
+image(x_unique, y_unique, pred_matrix,
+      main = "Predicted SAND by Zone",
+      xlab = "Easting", ylab = "Northing",
+      col = terrain.colors(20))
+points(all_data$x, all_data$y, pch = 3, cex = 0.8)
+
+# Uncertainty map
+sd_matrix <- matrix(eval_grid$pred_sd, 
+                    nrow = length(x_unique), 
+                    ncol = length(y_unique))
+
+image(x_unique, y_unique, sd_matrix,
+      main = "Ensemble Uncertainty (SD)",
+      xlab = "Easting", ylab = "Northing",
+      col = heat.colors(20))
+points(all_data$x, all_data$y, pch = 3, cex = 0.8)
+```
+

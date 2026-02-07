@@ -680,10 +680,10 @@ gc_ensemble_quality_report <- function(realizations_list,
     print(summary_metrics)
     
     cat("\nIssues:\n")
-    for (issue in issues) cat(" ✗", issue, "\n")
+    for (issue in issues) cat(" [!]", issue, "\n")
     
     cat("\nRecommendations:\n")
-    for (rec in recommendations) cat(" →", rec, "\n")
+    for (rec in recommendations) cat(" >>", rec, "\n")
   }
   
   list(

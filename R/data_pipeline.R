@@ -226,34 +226,74 @@ gc_prepare_ssurgo_direct <- function(map_unit_keys,
                                      depth_range = c(0, 30),
                                      weight_method = "comppct",
                                      target_sum = 100,
-                                     soilDB_installed = TRUE) {
+                                     verbose = TRUE) {
   
   # Check for soilDB
-  if (soilDB_installed && !requireNamespace("soilDB", quietly = TRUE)) {
-    warning(
+  if (!requireNamespace("soilDB", quietly = TRUE)) {
+    stop(
       "soilDB package required but not installed. ",
-      "Install via: install.packages('soilDB')\n",
-      "This function returns NULL; consider using geocoda functions directly with pre-fetched data."
+      "Install via: install.packages('soilDB')"
     )
-    return(NULL)
   }
   
-  # If soilDB is available, fetch data
+  if (verbose) {
+    cat("Preparing SSURGO Data Pipeline\n")
+    cat("  Map unit keys:", length(map_unit_keys), "\n")
+    cat("  Depth range:", paste(depth_range, collapse = "-"), "cm\n")
+  }
+  
+  # Orchestrate the full pipeline: fetch -> process -> convert to params
   tryCatch({
-    # This is a placeholder - actual implementation would query SDA
-    # For now, return guidance to user
-    message(
-      "gc_prepare_ssurgo_direct requires manual integration of soilDB queries.\n",
-      "Example workflow:\n",
-      "  library(soilDB)\n",
-      "  # Fetch SSURGO component data via SDA\n",
-      "  ssurgo_data <- soilDB::get_SDA_property(...)\n",
-      "  # Then process with geocoda\n",
-      "  params <- geocoda::gc_ssurgo_to_params(ssurgo_data, ...)"
+    # Step 1: Fetch component data via SDA
+    if (verbose) cat("  Step 1: Fetching data from SDA...\n")
+    
+    ssurgo_raw <- gc_fetch_sda_properties(
+      map_unit_keys = map_unit_keys,
+      depth_range = depth_range,
+      property_names = c("sandtotal_r", "silttotal_r", "claytotal_r"),
+      weight_by = weight_method,
+      verbose = FALSE
     )
-    return(NULL)
+    
+    if (nrow(ssurgo_raw) == 0) {
+      warning("No SSURGO component data returned for map unit keys: ",
+              paste(map_unit_keys, collapse = ", "))
+      return(NULL)
+    }
+    
+    # Step 2: Process components (aggregate by map unit)
+    if (verbose) cat("  Step 2: Processing components...\n")
+    
+    ssurgo_processed <- gc_process_ssurgo_components(
+      ssurgo_data = ssurgo_raw,
+      component_cols = c("sandtotal_r", "silttotal_r", "claytotal_r"),
+      aggregate_method = "weighted_mean",
+      weight_field = "comppct",
+      verbose = FALSE
+    )
+    
+    # Step 3: Convert to ILR parameters
+    if (verbose) cat("  Step 3: Converting to ILR parameters...\n")
+    
+    params <- gc_ssurgo_to_params(
+      x = ssurgo_processed$compositions,
+      weight_method = weight_method,
+      depth_range = depth_range,
+      target_sum = target_sum,
+      verbose = FALSE
+    )
+    
+    if (verbose) {
+      cat("  Pipeline complete!\n")
+      cat("    Map units processed:", length(unique(ssurgo_raw$mukey)), "\n")
+      if (!is.null(params$n_constraints)) {
+        cat("    Constraint ranges computed\n")
+      }
+    }
+    
+    return(params)
+    
   }, error = function(e) {
-    warning("Error querying SDA: ", e$message)
-    return(NULL)
+    stop("SSURGO pipeline failed: ", e$message)
   })
 }

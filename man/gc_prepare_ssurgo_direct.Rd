@@ -9,7 +9,7 @@ gc_prepare_ssurgo_direct(
   depth_range = c(0, 30),
   weight_method = "comppct",
   target_sum = 100,
-  soilDB_installed = TRUE
+  verbose = TRUE
 )
 }
 \arguments{

@@ -2,16 +2,15 @@
 % Please edit documentation in R/sda_integration.R
 \name{gc_fetch_sda_properties}
 \alias{gc_fetch_sda_properties}
-\title{Fetch Soil Properties from SDA via soilDB}
+\title{Fetch Soil Properties from SDA}
 \usage{
 gc_fetch_sda_properties(
   extent = NULL,
   map_unit_keys = NULL,
   depth_range = c(0, 30),
   property_names = c("sandtotal_r", "silttotal_r", "claytotal_r"),
-  component_type = NULL,
-  weight_by = "comppct",
-  timeout = 60,
+  method = "Weighted Average",
+  include_minors = TRUE,
   use_cache = TRUE,
   cache_dir = NULL,
   verbose = TRUE
@@ -21,75 +20,60 @@ gc_fetch_sda_properties(
 \item{extent}{Spatial object (sf, raster, or bbox) defining geographic extent,
 or NULL if querying by map_unit_keys}
 
-\item{map_unit_keys}{Character vector, SSURGO map unit keys to query (optional)}
+\item{map_unit_keys}{Numeric or character vector, SSURGO map unit keys to query
+(optional, alternative to extent)}
 
-\item{depth_range}{Numeric vector of length 2: min and max depth in cm (default c(0, 30))}
+\item{depth_range}{Numeric vector of length 2: min and max depth in cm
+(default c(0, 30))}
 
-\item{property_names}{Character vector, SSURGO property columns to fetch
-(default: c("sandtotal_r", "silttotal_r", "claytotal_r") for texture)}
+\item{property_names}{Character vector, SSURGO property columns or names to fetch
+(default: sand, silt, clay total; e.g. "sandtotal_r", "Total Sand - Rep Value")}
 
-\item{component_type}{Character, filter components by type
-(e.g., "Series", "Taxadjunct", "Miscellaneous Area", or NULL for all; default NULL)}
+\item{method}{Character, aggregation method ("Weighted Average" (default),
+"Dominant Component (Numeric)", "Dominant Component (Category)",
+"Min/Max", "Dominant Condition", or "None")}
 
-\item{weight_by}{Character: "comppct" (component \%,default), "area", or "none"}
-
-\item{timeout}{Numeric, database query timeout in seconds (default 60)}
+\item{include_minors}{Logical, include minor components in aggregation (default TRUE)}
 
 \item{use_cache}{Logical, cache results for 24 hours (default TRUE)}
 
 \item{cache_dir}{Character, directory for cache files (default system temp dir)}
 
-\item{verbose}{Logical, print query progress (default TRUE)}
+\item{verbose}{Logical, print minimal query progress (default TRUE)}
 }
 \value{
-A data frame with columns:
+A data.frame with map unit and property data:
 \itemize{
 \item \code{mukey}: Map unit key (unique SSURGO ID)
-\item \code{compname}: Component name
-\item \code{comppct}: Component percent of map unit
-\item \code{depth_min}, \code{depth_max}: Depth interval
+\item \code{areasymbol}: Soil survey area code
+\item \code{musym}, \code{muname}: Map unit symbol and name
 \item Properties specified (e.g., sandtotal_r, silttotal_r, claytotal_r)
-\item \code{geometry}: POINT geometry if extent was spatial
-\item Additional diagnostic fields
 }
 }
 \description{
-Query Soil Data Access directly using soilDB package to retrieve component-level
-soil property data for a specified geographic extent or set of map unit keys.
+Query Soil Data Access (SDA) directly using soilDB package to retrieve
+soil component and horizon properties for a specified geographic extent
+or set of map unit keys.
 }
 \details{
-Requires soilDB package: \code{install.packages("soilDB")}
-
-Query methods:
-\itemize{
-\item By extent: Pass sf/raster/bbox, queries all map units overlapping extent
-\item By map unit keys: Pass character vector, direct keys query
-\item Caching: Results cached with hash of query parameters for 24 hours
-}
+Uses \code{soilDB::get_SDA_property()} for property retrieval with various
+aggregation methods. Caching is automatic with 24-hour TTL.
 }
 \examples{
 \dontrun{
-# Example 1: Query by geographic extent
+# Query by geographic extent
 library(sf)
-study_area <- st_bbox(c(xmin = -93.5, ymin = 41.5,
-                        xmax = -93.4, ymax = 41.6), crs = 4326)
+extent <- st_bbox(c(xmin = -93.5, ymin = 41.5,
+                    xmax = -93.4, ymax = 41.6), crs = 4326)
 
-ssurgo_data <- gc_fetch_sda_properties(
-  extent = study_area,
+ssurgo <- gc_fetch_sda_properties(
+  extent = extent,
   depth_range = c(0, 30),
   property_names = c("sandtotal_r", "silttotal_r", "claytotal_r")
-)
-
-# Example 2: Query by specific map units
-ssurgo_data <- gc_fetch_sda_properties(
-  map_unit_keys = c("463168", "463169", "463171"),
-  depth_range = c(0, 30),
-  weight_by = "comppct"
 )
 }
 
 }
 \seealso{
-\code{\link[=gc_process_ssurgo_components]{gc_process_ssurgo_components()}} for downstream processing
-\code{\link[=gc_prepare_ssurgo_direct]{gc_prepare_ssurgo_direct()}} for simplified single-call interface
+\code{\link[soilDB:get_SDA_property]{soilDB::get_SDA_property()}}, \code{\link[soilDB:SDA_spatialQuery]{soilDB::SDA_spatialQuery()}}
 }

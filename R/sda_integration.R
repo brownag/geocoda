@@ -1096,3 +1096,201 @@ gc_simulate_mapunit_zones <- function(extent,
   return(result)
 }
 
+
+#' Weighted Zone Model Fitting with Neighbor Influence
+#'
+#' Fit per-zone models incorporating neighbor influence weights for 
+#' bootstrap-style weighted kriging. Weights observations by their
+#' neighborhood adjacency strength, enabling smoother transitions 
+#' at zone boundaries.
+#'
+#' @param observations Simple feature (sf) object with observations,
+#'   including columns: geometry, zone_id, mukey, neighbor_influence,
+#'   and property columns (e.g., sandtotal_r, silttotal_r, claytotal_r)
+#' @param property_names Character vector, composition property column names
+#'   (default: c("sandtotal_r", "silttotal_r", "claytotal_r"))
+#' @param use_neighbor_weights Logical, apply neighbor_influence weights
+#'   in zone statistics and simulation (default TRUE)
+#' @param verbose Logical, print processing details (default TRUE)
+#'
+#' @return A list containing:
+#'   - `zone_statistics`: Data frame with weighted means and standard deviations per zone
+#'   - `weighted_observations`: Updated observations with applied weights
+#'   - `weight_summary`: Summary of neighbor influence weights (min, mean, max)
+#'
+#' @details
+#' Uses `neighbor_influence` column in observations to weight each observation
+#' based on its zone's neighborly relationships. Higher weights (>1) boost 
+#' observations in zones with more neighbors, creating smoother spatial 
+#' transitions. Lower weights (<1) for isolated zones preserve their unique 
+#' characteristics.
+#'
+#' @examples
+#' \dontrun{
+#' # Fit weighted zone models
+#' zone_models <- gc_fit_zone_models_weighted(
+#'   observations = obs_sf,
+#'   property_names = c("sandtotal_r", "silttotal_r", "claytotal_r"),
+#'   use_neighbor_weights = TRUE
+#' )
+#'
+#' # Access weighted statistics
+#' head(zone_models$zone_statistics)
+#' }
+#'
+#' @export
+#' @seealso [gc_simulate_mapunit_zones()]
+gc_fit_zone_models_weighted <- function(observations,
+                                        property_names = c("sandtotal_r", 
+                                                          "silttotal_r", 
+                                                          "claytotal_r"),
+                                        use_neighbor_weights = TRUE,
+                                        verbose = TRUE) {
+  
+  if (!inherits(observations, "sf")) {
+    stop("observations must be a simple feature (sf) object")
+  }
+  
+  if (!("zone_id" %in% names(observations))) {
+    stop("zone_id column required in observations")
+  }
+  
+  # Remove geometry for statistics
+  obs_data <- sf::st_drop_geometry(observations)
+  
+  # Initialize weight column - prefer spatial_weight (observation-level) over neighbor_influence
+  # This supports both new spatial_weight approach and legacy neighbor_influence approach
+  if ("spatial_weight" %in% names(obs_data)) {
+    # New approach: observation-level spatial weights (distance + direction + adjacency)
+    # These are ALWAYS used when present - they override use_neighbor_weights flag
+    obs_data$weight_applied <- obs_data$spatial_weight
+    weight_method <- "spatial_weight (observation-level, ALWAYS USED when present)"
+  } else if (use_neighbor_weights && "neighbor_influence" %in% names(obs_data)) {
+    # Legacy approach: zone-level neighbor influence weights
+    obs_data$weight_applied <- obs_data$neighbor_influence
+    weight_method <- "neighbor_influence (zone-level)"
+  } else {
+    # Unweighted baseline
+    obs_data$weight_applied <- 1.0
+    weight_method <- "unweighted (all 1.0)"
+  }
+  
+  # DEBUG: Verify weights are set correctly and show in all cases
+  cat("DEBUG: Weight method =", weight_method, "\n")
+  cat("DEBUG: weight_applied range:", min(obs_data$weight_applied, na.rm=TRUE), "to", 
+      max(obs_data$weight_applied, na.rm=TRUE), "\n")
+  cat("DEBUG: Mean weight_applied:", mean(obs_data$weight_applied, na.rm=TRUE), "\n")
+  if ("spatial_weight" %in% names(obs_data)) {
+    cat("DEBUG: spatial_weight column present - USING FOR WEIGHTING\n")
+  }
+  
+  # Calculate weighted statistics per zone
+  zone_stats_list <- list()
+  
+  unique_zones <- sort(unique(obs_data$zone_id))
+  
+  for (zone_id in unique_zones) {
+    zone_data <- obs_data[obs_data$zone_id == zone_id, ]
+    zone_weights <- zone_data$weight_applied
+    
+    zone_stats <- data.frame(
+      zone_id = zone_id,
+      n_obs = nrow(zone_data),
+      n_weighted = sum(zone_weights)
+    )
+    
+    # DEBUG for first zone only
+    if (zone_id == unique_zones[1] && verbose) {
+      cat("  DEBUG ZONE 1:\n")
+      cat("    n_obs:", nrow(zone_data), "\n")
+      cat("    n_weighted:", sum(zone_weights), "\n")
+      cat("    weight_applied (first 3):", paste(round(zone_weights[1:3], 4), collapse=", "), "\n")
+    }
+    
+    # Compute weighted statistics for each property
+    for (prop in property_names) {
+      if (prop %in% names(zone_data)) {
+        prop_vals <- zone_data[[prop]]
+        
+        # Weighted mean
+        valid_idx <- !is.na(prop_vals)
+        if (sum(valid_idx) > 0) {
+          weighted_mean <- weighted.mean(prop_vals[valid_idx], 
+                                        zone_weights[valid_idx], 
+                                        na.rm = TRUE)
+          
+          # Weighted standard deviation
+          weighted_var <- sum(zone_weights[valid_idx] * 
+                            (prop_vals[valid_idx] - weighted_mean)^2) / 
+                         sum(zone_weights[valid_idx])
+          weighted_sd <- sqrt(weighted_var)
+          
+          zone_stats[[paste0(prop, "_mean")]] <- weighted_mean
+          zone_stats[[paste0(prop, "_sd")]] <- weighted_sd
+          
+          # DEBUG for first zone sand mean only
+          if (zone_id == unique_zones[1] && prop == "sandtotal_r" && verbose) {
+            cat("    ", prop, "_mean:", round(weighted_mean, 8), "\n")
+          }
+        } else {
+          zone_stats[[paste0(prop, "_mean")]] <- NA_real_
+          zone_stats[[paste0(prop, "_sd")]] <- NA_real_
+        }
+      }
+    }
+    
+    zone_stats_list[[length(zone_stats_list) + 1]] <- zone_stats
+  }
+  
+  zone_statistics <- do.call(rbind, zone_stats_list)
+  rownames(zone_statistics) <- NULL
+  
+  # Summary of weights
+  if (use_neighbor_weights) {
+    weight_summary <- data.frame(
+      min_weight = min(obs_data$weight_applied, na.rm = TRUE),
+      mean_weight = mean(obs_data$weight_applied, na.rm = TRUE),
+      max_weight = max(obs_data$weight_applied, na.rm = TRUE),
+      sd_weight = sd(obs_data$weight_applied, na.rm = TRUE),
+      n_obs_boosted = sum(obs_data$weight_applied > 1.05),
+      n_obs_total = nrow(obs_data)
+    )
+  } else {
+    weight_summary <- data.frame(
+      min_weight = 1.0,
+      mean_weight = 1.0,
+      max_weight = 1.0,
+      sd_weight = 0.0,
+      n_obs_boosted = 0,
+      n_obs_total = nrow(obs_data)
+    )
+  }
+  
+  if (verbose) {
+    cat("Weighted Zone Model Fitting Summary:\n")
+    cat("  Zones fitted:", nrow(zone_statistics), "\n")
+    cat("  Total observations:", nrow(obs_data), "\n")
+    if (use_neighbor_weights) {
+      cat("  Neighbor weights applied:\n")
+      cat("    Min weight:", round(weight_summary$min_weight, 4), "\n")
+      cat("    Mean weight:", round(weight_summary$mean_weight, 4), "\n")
+      cat("    Max weight:", round(weight_summary$max_weight, 4), "\n")
+      cat("    Observations boosted (>1.05x):", weight_summary$n_obs_boosted, "\n")
+    } else {
+      cat("  Neighbor weights: NOT applied\n")
+    }
+  }
+  
+  # Return results
+  result <- list(
+    zone_statistics = zone_statistics,
+    weighted_observations = obs_data,
+    weight_summary = weight_summary,
+    use_neighbor_weights = use_neighbor_weights
+  )
+  
+  class(result) <- c("gc_zone_models", "list")
+  
+  return(result)
+}
+

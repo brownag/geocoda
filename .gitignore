@@ -5,6 +5,7 @@
 .DS_Store
 *.Rproj
 .github/development/
+.development/
 *.html
 docs/
 scratch/
